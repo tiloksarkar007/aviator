@@ -1,0 +1,5 @@
+{
+  "name": "Aviator Crash Prototype",
+  "description": "A standalone, mobile-first Aviator-style crash game prototype using PixiJS and React. Features a simulated game engine with deterministic crash curves, betting logic, and smooth canvas animations.",
+  "requestFramePermissions": []
+}
