@@ -43,7 +43,8 @@ const App: React.FC = () => {
     const engine = new MockGameEngine();
     engineRef.current = engine;
 
-    let startTime = Date.now();
+    let flyingStartTime: number | null = null;
+    let previousGameState = GameState.IDLE;
 
     const unsubscribe = engine.subscribe((state) => {
       setGameState(state.gameState);
@@ -51,12 +52,20 @@ const App: React.FC = () => {
       setCountdown(state.countdown);
       setHistory(state.history);
       
-      if (state.gameState === GameState.FLYING) {
-         if (state.currentMultiplier === 1.0) startTime = Date.now(); // Reset on start
-         setElapsedTime((Date.now() - startTime) / 1000);
-      } else {
-         setElapsedTime(0);
+      // Track when FLYING state starts
+      if (state.gameState === GameState.FLYING && previousGameState !== GameState.FLYING) {
+        flyingStartTime = Date.now();
       }
+      
+      // Calculate elapsed time during flight
+      if (state.gameState === GameState.FLYING && flyingStartTime !== null) {
+        setElapsedTime((Date.now() - flyingStartTime) / 1000);
+      } else {
+        setElapsedTime(0);
+        flyingStartTime = null;
+      }
+      
+      previousGameState = state.gameState;
     });
 
     return () => {
@@ -71,35 +80,48 @@ const App: React.FC = () => {
     let resizeObserver: ResizeObserver | null = null;
     
     const initGame = async () => {
-       if (canvasRef.current) {
+       if (!canvasRef.current) {
+          console.warn('App: Canvas ref not available');
+          return;
+       }
+
+       try {
           // Ensure any previous scene is properly destroyed before creating a new one
           if (sceneRef.current) {
              sceneRef.current.destroy();
+             sceneRef.current = null;
           }
 
           const scene = new AviatorScene(canvasRef.current);
-          sceneRef.current = scene; 
           
+          // CRITICAL: Only set sceneRef AFTER init completes successfully
           await scene.init();
           
           if (!isMounted) {
              scene.destroy();
-             sceneRef.current = null;
              return;
           }
+          
+          // Now it's safe to set the ref
+          sceneRef.current = scene;
 
           // Setup ResizeObserver to handle container resizing robustly
-          // This is critical for ensuring the canvas picks up the correct size after layout
           if (canvasRef.current && scene) {
              resizeObserver = new ResizeObserver((entries) => {
                 for (const entry of entries) {
                    const { width, height } = entry.contentRect;
-                   if (width > 0 && height > 0) {
-                      scene.resize(width, height);
+                   if (width > 0 && height > 0 && sceneRef.current) {
+                      sceneRef.current.resize(width, height);
                    }
                 }
              });
              resizeObserver.observe(canvasRef.current);
+          }
+       } catch (error) {
+          console.error('App: Failed to initialize game scene', error);
+          if (sceneRef.current) {
+             sceneRef.current.destroy();
+             sceneRef.current = null;
           }
        }
     };
@@ -121,9 +143,15 @@ const App: React.FC = () => {
 
   // Sync Engine State to Visuals
   useEffect(() => {
+    // Only update if scene exists and is initialized
     if (sceneRef.current) {
-      sceneRef.current.updateState(gameState, multiplier, elapsedTime);
+      try {
+        sceneRef.current.updateState(gameState, multiplier, elapsedTime);
+      } catch (error) {
+        console.error('App: Failed to update scene state', error);
+      }
     }
+    // Silently skip if scene not ready yet (will be called again when ready)
   }, [gameState, multiplier, elapsedTime]);
 
   // Logic: Handle Crash vs Bet State

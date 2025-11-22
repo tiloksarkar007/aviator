@@ -1,663 +1,991 @@
-import { Application, Container, Graphics, Ticker, Texture, Color, Matrix } from 'pixi.js';
+import { Application, Container, Sprite, Graphics, Ticker, Texture, Assets } from 'pixi.js';
 import { GameState } from '../types';
 
-// --- Particle System Types ---
-interface Particle {
-  sprite: Graphics;
-  vx: number;
-  vy: number;
-  life: number;
-  maxLife: number;
-  rotationSpeed: number;
-  type: 'trail' | 'debris' | 'shockwave' | 'smoke' | 'fire';
-}
-
+/**
+ * AviatorScene - Premium, Modern, Performance-Optimized
+ * Features:
+ * - Modern futuristic aesthetics with gradients and glows
+ * - Mobile-first performance optimization
+ * - Responsive design with adaptive quality
+ * - Smooth animations and premium visual effects
+ */
 export class AviatorScene {
   private app: Application | null = null;
   private container: HTMLDivElement;
   
-  // Layers
+  // Display objects - layered for proper rendering
+  private stage: Container;
   private backgroundLayer: Container;
-  private gameLayer: Container;
-  private effectsLayer: Container; // Particles behind plane
-  private uiLayer: Container;      // Explosions on top
+  private gridLayer: Container;
+  private curveLayer: Container;
+  private effectsLayer: Container;
+  private planeLayer: Container;
   
-  // Visual Elements
-  private planeContainer: Container;
-  private planeBody: Graphics | null = null;
-  private planeProp: Graphics | null = null;
+  private planeSprite: Sprite | null = null;
+  private planeGraphics: Graphics | null = null;
+  private planeSpriteBaseScale: number = 1.0;
   private curveGraphics: Graphics;
   private areaGraphics: Graphics;
-  private bgRays: Graphics;
   private gridGraphics: Graphics;
+  private trailGraphics: Graphics;
+  private explosionGraphics: Graphics;
+  private flashGraphics: Graphics;
   
-  // Resources
-  private gradientTexture: Texture | null = null;
-  
-  // State Tracking
+  // State
   private width: number = 0;
   private height: number = 0;
-  private curvePoints: { t: number, m: number }[] = [];
   private currentState: GameState = GameState.IDLE;
+  private currentMultiplier: number = 1.0;
+  private elapsedSeconds: number = 0;
+  private curvePoints: Array<{ t: number; m: number }> = [];
+  private trailPoints: Array<{ x: number; y: number; alpha: number }> = [];
+  private exhaustParticles: Array<{ x: number; y: number; vx: number; vy: number; life: number; maxLife: number }> = [];
+  private explosionParticles: Array<{ x: number; y: number; vx: number; vy: number; life: number; maxLife: number; size: number; color: number }> = [];
   
-  // Camera / Viewport
-  private maxTimeWindow: number = 10;
-  private maxMultWindow: number = 2.0;
+  // Animation state
+  private planeScale: number = 1.0;
+  private planeRotationTarget: number = -0.1;
+  private planeRotationCurrent: number = -0.1;
+  private flightTime: number = 0;
+  
+  // Fly-away animation state
+  private flyAwayStartX: number = 0;
+  private flyAwayStartY: number = 0;
+  private flyAwayTime: number = 0;
+  private flyAwayDuration: number = 1.5; // seconds
+  private isFlyingAway: boolean = false;
+  private crashFlashAlpha: number = 0;
+  
+  // Viewport
   private scaleX: number = 1;
   private scaleY: number = 1;
+  private maxTimeWindow: number = 10;
+  private maxMultWindow: number = 2.0;
   
+  // Performance & Quality
   private isInitialized: boolean = false;
-  private isInitializing: boolean = false;
   private isDestroyed: boolean = false;
+  private isMobile: boolean = false;
+  private quality: number = 1; // 0.5 for mobile, 1 for desktop
+  private frameSkip: number = 0; // Skip frames on mobile for performance
   
-  // Animation & FX
-  private time: number = 0;
-  private particles: Particle[] = [];
-  private shakeIntensity: number = 0;
-  private trailTimer: number = 0;
+  // Responsive constants
+  private get PADDING_LEFT(): number {
+    return this.isMobile ? 40 : 60;
+  }
+  
+  private get PADDING_BOTTOM(): number {
+    return this.isMobile ? 40 : 60;
+  }
+  
+  private get PLANE_SIZE(): number {
+    return this.isMobile ? 72 : 90; // 1.5x increased size
+  }
+  
+  private get LINE_WIDTH(): number {
+    return this.isMobile ? 2.5 : 3.5;
+  }
+  
+  // Modern color palette
+  private readonly COLORS = {
+    BG_START: 0x0a0e1a,
+    BG_END: 0x0f172a,
+    CURVE_START: 0xff006e,
+    CURVE_END: 0xe11d48,
+    AREA_START: 0xff006e,
+    AREA_END: 0xe11d48,
+    GRID: 0x1e293b,
+    GRID_MAJOR: 0x334155,
+    GLOW: 0xff006e,
+    TRAIL: 0xff006e,
+    EXPLOSION: 0xff6b00,
+    EXPLOSION_FIRE: 0xffaa00,
+    FLASH: 0xffffff,
+  };
 
   constructor(container: HTMLDivElement) {
+    if (!container) throw new Error('Container required');
     this.container = container;
-    // Use fallback dimensions if container is currently hidden/zero
-    this.width = container.clientWidth || 800;
-    this.height = container.clientHeight || 600;
+    
+    const rect = container.getBoundingClientRect();
+    this.width = Math.max(rect.width || 800, 400);
+    this.height = Math.max(rect.height || 600, 300);
+    
+    // Detect mobile
+    this.isMobile = this.width < 768 || window.innerWidth < 768;
+    this.quality = this.isMobile ? 0.5 : 1;
 
+    // Initialize layered containers
+    this.stage = new Container();
     this.backgroundLayer = new Container();
-    this.gameLayer = new Container();
+    this.gridLayer = new Container();
+    this.curveLayer = new Container();
     this.effectsLayer = new Container();
-    this.uiLayer = new Container();
-
-    this.bgRays = new Graphics();
-    this.gridGraphics = new Graphics();
+    this.planeLayer = new Container();
+    
+    // Layer order (bottom to top)
+    this.stage.addChild(this.backgroundLayer);
+    this.stage.addChild(this.gridLayer);
+    this.stage.addChild(this.curveLayer);
+    this.stage.addChild(this.effectsLayer);
+    this.stage.addChild(this.planeLayer);
+    
+    // Initialize graphics
     this.curveGraphics = new Graphics();
     this.areaGraphics = new Graphics();
+    this.gridGraphics = new Graphics();
+    this.trailGraphics = new Graphics();
+    this.explosionGraphics = new Graphics();
+    this.flashGraphics = new Graphics();
     
-    this.planeContainer = new Container();
-    
-    // Layer Hierarchy
-    this.backgroundLayer.addChild(this.bgRays);
-    this.backgroundLayer.addChild(this.gridGraphics);
-    
-    this.gameLayer.addChild(this.areaGraphics);
-    this.gameLayer.addChild(this.curveGraphics);
-    this.gameLayer.addChild(this.effectsLayer); // Trail behind plane
-    this.gameLayer.addChild(this.planeContainer);
+    this.curveLayer.addChild(this.areaGraphics);
+    this.curveLayer.addChild(this.curveGraphics);
+    this.gridLayer.addChild(this.gridGraphics);
+    this.effectsLayer.addChild(this.trailGraphics);
+    this.effectsLayer.addChild(this.explosionGraphics);
+    this.effectsLayer.addChild(this.flashGraphics);
   }
 
-  public async init() {
-    // Prevent re-entry or init if already destroyed
-    if (this.isInitialized || this.isDestroyed || this.isInitializing) return;
-
-    this.isInitializing = true;
-    this.app = new Application();
+  public async init(): Promise<void> {
+    if (this.isInitialized || this.isDestroyed) return;
 
     try {
-      // PixiJS v8 Init
+      const rect = this.container.getBoundingClientRect();
+      this.width = Math.max(rect.width || 800, 400);
+      this.height = Math.max(rect.height || 600, 300);
+      
+      // Re-detect mobile on init
+      this.isMobile = this.width < 768 || window.innerWidth < 768;
+      this.quality = this.isMobile ? 0.5 : 1;
+
+      // Create PixiJS app with performance settings
+      this.app = new Application();
       await this.app.init({
         width: this.width,
         height: this.height,
-        background: '#0f172a',
-        antialias: true,
-        resolution: window.devicePixelRatio || 1,
+        background: this.COLORS.BG_END,
+        antialias: !this.isMobile, // Disable antialiasing on mobile for performance
+        resolution: this.quality,
         autoDensity: true,
-        preference: 'webgl', // FORCE WebGL to avoid WebGPU blank screen issues on some devices
+        powerPreference: 'high-performance',
       });
+
+      if (this.isDestroyed) {
+        this.safeDestroyApp();
+        return;
+      }
+
+      // Style canvas
+      const canvas = this.app.canvas as HTMLCanvasElement;
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.display = 'block';
+      canvas.style.position = 'absolute';
+      canvas.style.top = '0';
+      canvas.style.left = '0';
+      canvas.style.pointerEvents = 'none';
+
+      this.container.appendChild(canvas);
+      this.app.stage.addChild(this.stage);
+
+      // Draw background gradient
+      this.drawBackground();
+      
+      // Draw grid
+      this.drawGrid();
+      
+      // Create plane
+      await this.createPlane();
+      
+      // Initialize scene
+      this.resetScene();
+
+      // Start ticker
+      if (this.app.ticker) {
+        this.app.ticker.add(this.tickerLoop);
+      }
+
+      this.isInitialized = true;
+      
+      // Force initial render
+      if (this.app.renderer) {
+        this.app.renderer.render(this.app.stage);
+      }
     } catch (error) {
-      console.warn("AviatorScene: Pixi init cancelled or failed", error);
-      this.isInitializing = false;
-      return;
-    }
-
-    this.isInitializing = false;
-
-    // Handle race condition: Destroy called WHILE we were awaiting init
-    if (this.isDestroyed) {
+      console.error('Init failed', error);
       this.safeDestroyApp();
-      return;
+      throw error;
+    }
+  }
+
+  private drawBackground(): void {
+    const bg = new Graphics();
+    bg.rect(0, 0, this.width, this.height);
+    bg.fill({ 
+      color: this.COLORS.BG_START,
+      alpha: 1 
+    });
+    this.backgroundLayer.addChild(bg);
+  }
+
+  private drawGrid(): void {
+    if (!this.gridGraphics) return;
+    
+    this.gridGraphics.clear();
+    
+    const originX = this.PADDING_LEFT;
+    const originY = this.height - this.PADDING_BOTTOM;
+    const availWidth = this.width - this.PADDING_LEFT;
+    const availHeight = this.height - this.PADDING_BOTTOM;
+    
+    const gridSpacing = this.isMobile ? 40 : 60;
+    const majorLineEvery = 3;
+    
+    // Vertical lines (time axis)
+    for (let i = 0; i <= Math.ceil(availWidth / gridSpacing); i++) {
+      const x = originX + (i * gridSpacing);
+      const isMajor = i % majorLineEvery === 0;
+      
+      this.gridGraphics.moveTo(x, 0);
+      this.gridGraphics.lineTo(x, this.height);
+      this.gridGraphics.stroke({ 
+        width: isMajor ? 1 : 0.5, 
+        color: isMajor ? this.COLORS.GRID_MAJOR : this.COLORS.GRID,
+        alpha: isMajor ? 0.3 : 0.15
+      });
+    }
+    
+    // Horizontal lines (multiplier axis)
+    for (let i = 0; i <= Math.ceil(availHeight / gridSpacing); i++) {
+      const y = originY - (i * gridSpacing);
+      const isMajor = i % majorLineEvery === 0;
+      
+      this.gridGraphics.moveTo(originX, y);
+      this.gridGraphics.lineTo(this.width, y);
+      this.gridGraphics.stroke({ 
+        width: isMajor ? 1 : 0.5, 
+        color: isMajor ? this.COLORS.GRID_MAJOR : this.COLORS.GRID,
+        alpha: isMajor ? 0.3 : 0.15
+      });
+    }
+  }
+
+  private async createPlane(): Promise<void> {
+    try {
+      const texture = await this.loadTexture();
+      if (texture) {
+        this.planeSprite = new Sprite(texture);
+        this.planeSprite.anchor.set(0.5, 0.5);
+        
+        // Store base scale for pulse effect
+        this.planeSpriteBaseScale = this.PLANE_SIZE / Math.max(texture.width, texture.height);
+        this.planeSprite.scale.set(this.planeSpriteBaseScale);
+        
+        this.planeSprite.visible = true;
+        this.planeSprite.alpha = 1;
+        this.planeLayer.addChild(this.planeSprite);
+        return;
+      }
+    } catch (error) {
+      console.warn('Sprite failed, using graphics fallback', error);
     }
 
-    // Explicitly style the canvas to ensure it fills the container
-    this.app.canvas.style.width = '100%';
-    this.app.canvas.style.height = '100%';
-    this.app.canvas.style.display = 'block';
-    this.app.canvas.style.position = 'absolute';
-    this.app.canvas.style.top = '0';
-    this.app.canvas.style.left = '0';
-
-    this.container.appendChild(this.app.canvas);
-    
-    this.app.stage.addChild(this.backgroundLayer);
-    this.app.stage.addChild(this.gameLayer);
-    this.app.stage.addChild(this.uiLayer);
-
-    // Generate Assets
-    this.createPlaneVisuals();
-    this.createGradientTexture();
-    this.drawRays();
-    this.resetScene();
-
-    // Animation Loop
-    this.app.ticker.add(this.tickerLoop);
-
-    this.isInitialized = true;
+    // Fallback: Premium graphics plane
+    this.planeGraphics = new Graphics();
+    this.drawPlaneGraphics();
+    this.planeGraphics.visible = true;
+    this.planeGraphics.alpha = 1;
+    this.planeLayer.addChild(this.planeGraphics);
   }
 
-  // --- Asset Generation ---
+  private drawPlaneGraphics(): void {
+    if (!this.planeGraphics) return;
+    
+    this.planeGraphics.clear();
+    
+    const size = this.PLANE_SIZE * this.planeScale;
+    
+    // Outer glow (premium effect)
+    this.planeGraphics.circle(0, 0, size * 0.7);
+    this.planeGraphics.fill({ color: this.COLORS.GLOW, alpha: 0.15 });
+    
+    this.planeGraphics.circle(0, 0, size * 0.5);
+    this.planeGraphics.fill({ color: this.COLORS.GLOW, alpha: 0.25 });
+    
+    // Body with gradient effect (simulated)
+    this.planeGraphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.3);
+    this.planeGraphics.fill({ color: this.COLORS.CURVE_START });
+    
+    // Body highlight
+    this.planeGraphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.1);
+    this.planeGraphics.fill({ color: 0xffffff, alpha: 0.2 });
+    
+    // Cockpit
+    this.planeGraphics.moveTo(-size * 0.3, -size * 0.15);
+    this.planeGraphics.lineTo(0, -size * 0.4);
+    this.planeGraphics.lineTo(size * 0.3, -size * 0.15);
+    this.planeGraphics.closePath();
+    this.planeGraphics.fill({ color: this.COLORS.CURVE_START });
 
-  private createGradientTexture() {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 256;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-        const grd = ctx.createLinearGradient(0, 0, 0, 256);
-        grd.addColorStop(0, 'rgba(225, 29, 72, 0.6)'); // Rose-600 with opacity
-        grd.addColorStop(1, 'rgba(225, 29, 72, 0.0)'); // Fade to transparent
-        ctx.fillStyle = grd;
-        ctx.fillRect(0, 0, 1, 256);
+    // Window with glow
+    this.planeGraphics.circle(size * 0.15, 0, size * 0.12);
+    this.planeGraphics.fill({ color: 0xffffff, alpha: 0.3 });
+    
+    this.planeGraphics.circle(size * 0.15, 0, size * 0.08);
+    this.planeGraphics.fill({ color: 0x38bdf8 });
+    
+    // Accent lines
+    this.planeGraphics.moveTo(-size * 0.2, size * 0.1);
+    this.planeGraphics.lineTo(size * 0.2, size * 0.1);
+    this.planeGraphics.stroke({ width: 2, color: 0xffffff, alpha: 0.3 });
+  }
+
+  private async loadTexture(): Promise<Texture | null> {
+    try {
+      if (!Assets.cache.has('plane')) {
+        Assets.add({ alias: 'plane', src: '/plane.png' });
+      }
+      return await Assets.load('plane');
+    } catch {
+      try {
+        return Texture.from('/plane.png');
+      } catch {
+        return null;
+      }
     }
-    this.gradientTexture = Texture.from(canvas);
   }
 
-  private createPlaneVisuals() {
-    // 1. Fuselage
-    this.planeBody = new Graphics();
-    const gBody = this.planeBody;
-    
-    // Main Body
-    gBody.roundRect(-40, -15, 80, 30, 8);
-    gBody.fill({ color: 0xe11d48 }); // Rose-600
-    
-    // Upper Curve / Cockpit
-    gBody.beginPath();
-    gBody.moveTo(-15, -15);
-    gBody.quadraticCurveTo(0, -30, 30, -15);
-    gBody.fill({ color: 0xe11d48 });
-
-    // Tail Fin
-    gBody.beginPath();
-    gBody.moveTo(-35, -15);
-    gBody.lineTo(-45, -40);
-    gBody.lineTo(-15, -15);
-    gBody.fill({ color: 0xbe123c }); // Rose-700
-
-    // Wing (Side View)
-    gBody.beginPath();
-    gBody.moveTo(-10, 5);
-    gBody.lineTo(-25, 20);
-    gBody.lineTo(15, 10);
-    gBody.fill({ color: 0xbe123c });
-
-    // Window
-    gBody.ellipse(10, -10, 12, 8);
-    gBody.fill({ color: 0x38bdf8 }); // Sky Blue
-    gBody.stroke({ width: 2, color: 0xffffff, alpha: 0.6 });
-    
-    // Shadow/Highlight (simulated with line)
-    gBody.moveTo(-40, 0);
-    gBody.lineTo(40, 0);
-    gBody.stroke({ width: 2, color: 0xffffff, alpha: 0.1 });
-
-    // 2. Propeller
-    this.planeProp = new Graphics();
-    const gProp = this.planeProp;
-    
-    gProp.ellipse(0, 0, 4, 25);
-    gProp.fill({ color: 0xe2e8f0 }); // Slate-200
-    gProp.stroke({ width: 1, color: 0x94a3b8 });
-    gProp.circle(0, 0, 6); // Hub
-    gProp.fill({ color: 0x475569 }); // Slate-600
-    
-    gProp.position.set(42, 0); // Position at nose
-
-    // Assemble Plane
-    this.planeContainer.addChild(this.planeBody);
-    this.planeContainer.addChild(this.planeProp);
-  }
-
-  // --- Game Loop ---
-
-  private tickerLoop = (ticker: Ticker) => {
+  private tickerLoop = (ticker: Ticker): void => {
     if (!this.app || this.isDestroyed || !this.isInitialized) return;
 
-    const dt = ticker.deltaTime;
-    this.time += dt;
+    const plane = this.planeSprite || this.planeGraphics;
+    if (!plane) return;
 
-    // 1. Background Animation
-    this.bgRays.rotation += 0.0005 * dt;
-
-    // 2. Plane Animation (Idle Hover or Flying)
-    if (this.currentState === GameState.FLYING || this.currentState === GameState.BETTING) {
-       // Propeller spin
-       if (this.planeProp) {
-          // Spin faster when flying
-          const speed = this.currentState === GameState.FLYING ? 0.8 : 0.1;
-          this.planeProp.rotation += speed * dt;
-          // Visual blur effect on propeller when fast
-          this.planeProp.scale.y = this.currentState === GameState.FLYING ? 0.8 + Math.sin(this.time) * 0.2 : 1; 
-       }
-       
-       // Gentle hover
-       if (this.currentState === GameState.BETTING) {
-         this.planeContainer.y += Math.sin(this.time * 0.05) * 0.5;
-       }
+    // Frame skipping for mobile performance
+    this.frameSkip++;
+    const shouldUpdate = !this.isMobile || this.frameSkip % 2 === 0;
+    if (!shouldUpdate && this.currentState !== GameState.FLYING) {
+      return;
     }
+    if (this.frameSkip > 1000) this.frameSkip = 0;
 
-    // 3. Trail Emission
+    // Update based on state
     if (this.currentState === GameState.FLYING) {
-        this.trailTimer += dt;
-        if (this.trailTimer > 3) { // Emit every ~3 frames
-            this.spawnTrailParticle();
-            this.trailTimer = 0;
-        }
-    }
-
-    // 4. Particle Updates
-    this.updateParticles(dt);
-
-    // 5. Screen Shake
-    if (this.shakeIntensity > 0) {
-        const shakeX = (Math.random() * 2 - 1) * this.shakeIntensity;
-        const shakeY = (Math.random() * 2 - 1) * this.shakeIntensity;
-        
-        if (this.app.stage) {
-           this.app.stage.position.set(shakeX, shakeY);
-        }
-        
-        this.shakeIntensity *= 0.9; // Decay
-        if (this.shakeIntensity < 0.5) {
-            this.shakeIntensity = 0;
-            if (this.app.stage) this.app.stage.position.set(0, 0);
-        }
+      // Always ensure plane is visible during flight
+      plane.visible = true;
+      plane.alpha = 1;
+      this.updateFlight(ticker);
+    } else if (this.currentState === GameState.CRASHED && this.isFlyingAway) {
+      // Keep plane visible during fly-away animation
+      plane.visible = true;
+      this.updateFlyAway(ticker);
+    } else if (this.currentState === GameState.BETTING) {
+      // Always ensure plane is visible during betting
+      plane.visible = true;
+      plane.alpha = 1;
+      this.updateBetting(ticker);
+    } else {
+      // Always ensure plane is visible during idle
+      plane.visible = true;
+      plane.alpha = 1;
+      this.updateIdle();
     }
   };
 
-  private spawnTrailParticle() {
-      const g = new Graphics();
-      g.circle(0, 0, Math.random() * 4 + 2);
-      g.fill({ color: 0xffffff, alpha: 0.4 }); // White/Smoke
+  private updateFlight(ticker: Ticker): void {
+    const originX = this.PADDING_LEFT;
+    const originY = this.height - this.PADDING_BOTTOM;
+    
+    this.updateViewport();
+    this.flightTime += ticker.deltaMS / 1000;
+    
+    const planeX = originX + (this.elapsedSeconds * this.scaleX);
+    const planeY = originY - ((this.currentMultiplier - 1) * this.scaleY);
+    
+    const plane = this.planeSprite || this.planeGraphics;
+    if (plane) {
+      // Smooth position with slight easing
+      const currentX = plane.x || planeX;
+      const currentY = plane.y || planeY;
+      const smoothFactor = 0.15;
+      plane.position.set(
+        currentX + (planeX - currentX) * smoothFactor,
+        currentY + (planeY - currentY) * smoothFactor
+      );
       
-      // Position at back of plane, relative to scene
-      const offset = -35;
-      const angle = this.planeContainer.rotation;
-      const startX = this.planeContainer.x + Math.cos(angle) * offset;
-      const startY = this.planeContainer.y + Math.sin(angle) * offset;
-
-      g.position.set(startX, startY);
-      
-      this.effectsLayer.addChild(g);
-      
-      this.particles.push({
-          sprite: g,
-          vx: -Math.cos(angle) * 2 + (Math.random() - 0.5),
-          vy: Math.sin(angle) * 2 + (Math.random() - 0.5),
-          life: 1.0,
-          maxLife: 1.0,
-          rotationSpeed: 0,
-          type: 'trail'
-      });
-  }
-
-  private updateParticles(dt: number) {
-      for (let i = this.particles.length - 1; i >= 0; i--) {
-          const p = this.particles[i];
-          p.life -= 0.02 * dt;
-          
-          if (p.life <= 0) {
-              p.sprite.destroy();
-              this.particles.splice(i, 1);
-              continue;
-          }
-
-          const progress = 1 - (p.life / p.maxLife);
-
-          p.sprite.x += p.vx * dt;
-          p.sprite.y += p.vy * dt;
-          p.sprite.rotation += p.rotationSpeed * dt;
-
-          if (p.type === 'trail') {
-              p.sprite.alpha = p.life * 0.5;
-              p.sprite.scale.set(1 + progress); 
-          } else if (p.type === 'debris') {
-              p.sprite.alpha = Math.min(1, p.life);
-              p.vy += 0.15 * dt; // Stronger gravity
-          } else if (p.type === 'shockwave') {
-              p.sprite.alpha = p.life / p.maxLife;
-              p.sprite.scale.set(1 + progress * 3);
-          } else if (p.type === 'fire') {
-               p.sprite.alpha = p.life / p.maxLife;
-               p.sprite.scale.set(1 + progress * 0.5);
-          } else if (p.type === 'smoke') {
-               p.sprite.alpha = (p.life / p.maxLife) * 0.5;
-               p.sprite.scale.set(1 + progress * 3);
-               p.vx *= 0.95;
-               p.vy *= 0.95;
-          }
+      // Premium rotation with smooth interpolation
+      if (this.curvePoints.length > 1) {
+        const prev = this.curvePoints[this.curvePoints.length - 2];
+        const dx = (this.elapsedSeconds - prev.t) * this.scaleX;
+        const dy = -((this.currentMultiplier - prev.m) * this.scaleY);
+        this.planeRotationTarget = Math.atan2(dy, dx) * 0.75;
+      } else {
+        this.planeRotationTarget = -0.1;
       }
+      
+      // Smooth rotation interpolation
+      const rotationDiff = this.planeRotationTarget - this.planeRotationCurrent;
+      this.planeRotationCurrent += rotationDiff * 0.1;
+      
+      if (this.planeSprite) {
+        this.planeSprite.rotation = this.planeRotationCurrent;
+      } else if (this.planeGraphics) {
+        // For graphics, we'd need to redraw, but rotation is less critical
+      }
+      
+      // Premium scale pulsing effect (subtle breathing)
+      const pulseSpeed = 2;
+      const pulseAmount = 0.03;
+      this.planeScale = 1.0 + Math.sin(this.flightTime * pulseSpeed) * pulseAmount;
+      
+      if (this.planeSprite) {
+        this.planeSprite.scale.set(this.planeSpriteBaseScale * this.planeScale);
+      }
+    }
+    
+    // Update exhaust particles
+    this.updateExhaustParticles(planeX, planeY);
+    
+    // Update trail
+    this.updateTrail(planeX, planeY);
+    
+    // Draw curve (optimized - only when needed)
+    if (this.frameSkip % (this.isMobile ? 2 : 1) === 0) {
+      this.drawCurve();
+    }
   }
 
-  // --- State Management ---
+  private updateBetting(ticker: Ticker): void {
+    const originX = this.PADDING_LEFT;
+    const originY = this.height - this.PADDING_BOTTOM;
+    const hoverY = originY + Math.sin(ticker.lastTime * 0.001) * 3;
+    
+    const plane = this.planeSprite || this.planeGraphics;
+    if (plane) {
+      plane.position.set(originX, hoverY);
+      if (this.planeSprite) {
+        this.planeSprite.rotation = -0.1;
+      }
+    }
+    
+    this.drawCurve();
+  }
 
-  public updateState(state: GameState, multiplier: number, elapsedSeconds: number) {
+  private updateIdle(): void {
+    const originX = this.PADDING_LEFT;
+    const originY = this.height - this.PADDING_BOTTOM;
+    
+    const plane = this.planeSprite || this.planeGraphics;
+    if (plane) {
+      plane.position.set(originX, originY);
+      if (this.planeSprite) {
+        this.planeSprite.rotation = -0.1;
+      }
+    }
+    
+    this.drawCurve();
+  }
+
+  private updateFlyAway(ticker: Ticker): void {
+    this.flyAwayTime += ticker.deltaMS / 1000;
+    const progress = Math.min(this.flyAwayTime / this.flyAwayDuration, 1.0);
+    
+    const plane = this.planeSprite || this.planeGraphics;
+    if (!plane) return;
+
+    // Easing function for smooth acceleration
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+    const easedProgress = easeOutCubic(progress);
+
+    // Calculate fly-away trajectory (up and to the right, dramatic angle)
+    const angle = Math.PI / 4; // 45 degrees up-right
+    const distance = Math.max(this.width, this.height) * 1.5;
+    const targetX = this.flyAwayStartX + Math.cos(angle) * distance * easedProgress;
+    const targetY = this.flyAwayStartY - Math.sin(angle) * distance * easedProgress;
+
+    // Update position with smooth interpolation
+    const currentX = plane.x || this.flyAwayStartX;
+    const currentY = plane.y || this.flyAwayStartY;
+    plane.position.set(
+      currentX + (targetX - currentX) * 0.2,
+      currentY + (targetY - currentY) * 0.2
+    );
+
+    // Dramatic rotation (spinning as it flies away)
+    const rotationSpeed = Math.PI * 2; // Full rotation per second
+    if (this.planeSprite) {
+      this.planeSprite.rotation = this.planeRotationCurrent + (rotationSpeed * this.flyAwayTime * 0.5);
+    }
+
+    // Scale up as it flies away (zoom effect)
+    const scaleMultiplier = 1.0 + (easedProgress * 0.5);
+    if (this.planeSprite) {
+      this.planeSprite.scale.set(this.planeSpriteBaseScale * scaleMultiplier);
+    } else if (this.planeGraphics) {
+      this.planeScale = scaleMultiplier;
+      this.drawPlaneGraphics();
+    }
+
+    // Fade out
+    plane.alpha = 1.0 - easedProgress;
+
+    // Update explosion particles
+    this.updateExplosionParticles(ticker);
+
+    // Update flash effect
+    this.updateCrashFlash(ticker);
+
+    // Update trail (fade out)
+    this.updateTrail(plane.x, plane.y);
+    this.trailPoints.forEach(point => {
+      point.alpha *= 0.95;
+    });
+
+    // Clean up when animation completes
+    if (progress >= 1.0) {
+      plane.visible = false;
+      this.isFlyingAway = false;
+      this.explosionParticles = [];
+      this.trailPoints = [];
+      this.explosionGraphics.clear();
+      this.flashGraphics.clear();
+    }
+  }
+
+  private createExplosion(x: number, y: number): void {
+    const particleCount = this.isMobile ? 30 : 50;
+    
+    for (let i = 0; i < particleCount; i++) {
+      const angle = (Math.PI * 2 * i) / particleCount + (Math.random() - 0.5) * 0.5;
+      const speed = 2 + Math.random() * 4;
+      const life = 0.5 + Math.random() * 0.5;
+      const size = 3 + Math.random() * 8;
+      const color = Math.random() > 0.5 ? this.COLORS.EXPLOSION : this.COLORS.EXPLOSION_FIRE;
+      
+      this.explosionParticles.push({
+        x: x + (Math.random() - 0.5) * 20,
+        y: y + (Math.random() - 0.5) * 20,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: life,
+        maxLife: life,
+        size: size,
+        color: color
+      });
+    }
+  }
+
+  private updateExplosionParticles(ticker: Ticker): void {
+    // Update existing particles
+    this.explosionParticles = this.explosionParticles.filter(particle => {
+      particle.x += particle.vx;
+      particle.y += particle.vy;
+      particle.vx *= 0.98; // Friction
+      particle.vy *= 0.98;
+      particle.vy += 0.1; // Gravity
+      particle.life -= ticker.deltaMS / 1000;
+      return particle.life > 0;
+    });
+
+    // Draw particles
+    this.explosionGraphics.clear();
+    for (const particle of this.explosionParticles) {
+      const alpha = particle.life / particle.maxLife;
+      const size = particle.size * alpha;
+      
+      this.explosionGraphics.circle(particle.x, particle.y, size);
+      this.explosionGraphics.fill({ 
+        color: particle.color,
+        alpha: alpha * 0.8
+      });
+      
+      // Outer glow
+      this.explosionGraphics.circle(particle.x, particle.y, size * 1.5);
+      this.explosionGraphics.fill({ 
+        color: particle.color,
+        alpha: alpha * 0.3
+      });
+    }
+  }
+
+  private updateCrashFlash(ticker: Ticker): void {
+    // Flash effect on crash
+    if (this.flyAwayTime < 0.1) {
+      this.crashFlashAlpha = 1.0;
+    } else {
+      this.crashFlashAlpha = Math.max(0, this.crashFlashAlpha - ticker.deltaMS / 200);
+    }
+
+    this.flashGraphics.clear();
+    if (this.crashFlashAlpha > 0) {
+      this.flashGraphics.rect(0, 0, this.width, this.height);
+      this.flashGraphics.fill({ 
+        color: this.COLORS.FLASH,
+        alpha: this.crashFlashAlpha * 0.3
+      });
+    }
+  }
+
+  private updateExhaustParticles(planeX: number, planeY: number): void {
+    if (!this.planeSprite && !this.planeGraphics) return;
+    
+    const plane = this.planeSprite || this.planeGraphics;
+    const rotation = this.planeRotationCurrent;
+    
+    // Calculate exhaust position (behind plane)
+    const exhaustDistance = this.PLANE_SIZE * 0.8;
+    const exhaustX = planeX - Math.cos(rotation) * exhaustDistance;
+    const exhaustY = planeY - Math.sin(rotation) * exhaustDistance;
+    
+    // Add new particles
+    const particlesPerFrame = this.isMobile ? 1 : 2;
+    for (let i = 0; i < particlesPerFrame; i++) {
+      const angle = rotation + (Math.PI) + (Math.random() - 0.5) * 0.5;
+      const speed = 0.5 + Math.random() * 1.0;
+      this.exhaustParticles.push({
+        x: exhaustX + (Math.random() - 0.5) * 10,
+        y: exhaustY + (Math.random() - 0.5) * 10,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 1.0,
+        maxLife: 0.3 + Math.random() * 0.4
+      });
+    }
+    
+    // Update and remove dead particles
+    this.exhaustParticles = this.exhaustParticles.filter(particle => {
+      particle.x += particle.vx;
+      particle.y += particle.vy;
+      particle.life -= (1 / 60) / particle.maxLife; // Assuming 60fps
+      particle.vx *= 0.95; // Friction
+      particle.vy *= 0.95;
+      return particle.life > 0;
+    });
+    
+    // Limit particle count for performance
+    const maxParticles = this.isMobile ? 20 : 40;
+    if (this.exhaustParticles.length > maxParticles) {
+      this.exhaustParticles = this.exhaustParticles.slice(-maxParticles);
+    }
+  }
+
+  private updateTrail(x: number, y: number): void {
+    // Add new trail point
+    this.trailPoints.push({ x, y, alpha: 1.0 });
+    
+    // Limit trail length for performance
+    const maxTrailLength = this.isMobile ? 20 : 40;
+    if (this.trailPoints.length > maxTrailLength) {
+      this.trailPoints.shift();
+    }
+    
+    // Fade trail points with smooth gradient
+    this.trailPoints.forEach((point, i) => {
+      const progress = i / this.trailPoints.length;
+      point.alpha = (1 - progress) * 0.7;
+    });
+    
+    // Draw trail with gradient effect
+    this.trailGraphics.clear();
+    if (this.trailPoints.length > 1) {
+      // Draw exhaust particles
+      for (const particle of this.exhaustParticles) {
+        const size = this.PLANE_SIZE * 0.15 * particle.life;
+        this.trailGraphics.circle(particle.x, particle.y, size);
+        this.trailGraphics.fill({ 
+          color: this.COLORS.TRAIL,
+          alpha: particle.life * 0.4
+        });
+      }
+      
+      // Draw trail line with varying width
+      this.trailGraphics.moveTo(this.trailPoints[0].x, this.trailPoints[0].y);
+      for (let i = 1; i < this.trailPoints.length; i++) {
+        const point = this.trailPoints[i];
+        const progress = i / this.trailPoints.length;
+        const width = this.LINE_WIDTH * 2 * (1 - progress * 0.5);
+        this.trailGraphics.lineTo(point.x, point.y);
+        this.trailGraphics.stroke({ 
+          width: width, 
+          color: this.COLORS.TRAIL,
+          alpha: point.alpha
+        });
+        this.trailGraphics.moveTo(point.x, point.y);
+      }
+      
+      // Glow effect
+      this.trailGraphics.moveTo(this.trailPoints[0].x, this.trailPoints[0].y);
+      for (let i = 1; i < this.trailPoints.length; i++) {
+        const point = this.trailPoints[i];
+        this.trailGraphics.lineTo(point.x, point.y);
+      }
+      this.trailGraphics.stroke({ 
+        width: this.LINE_WIDTH * 3, 
+        color: this.COLORS.TRAIL,
+        alpha: 0.15
+      });
+    }
+  }
+
+  private drawCurve(): void {
+    if (!this.curveGraphics || !this.areaGraphics) return;
+
+    const originX = this.PADDING_LEFT;
+    const originY = this.height - this.PADDING_BOTTOM;
+
+    this.curveGraphics.clear();
+    this.areaGraphics.clear();
+
+    if (this.curvePoints.length === 0) {
+      this.curvePoints = [{ t: 0, m: 1.0 }];
+    }
+
+    // Draw area fill with gradient effect (simulated)
+    this.areaGraphics.moveTo(originX, originY);
+    for (const point of this.curvePoints) {
+      const x = originX + (point.t * this.scaleX);
+      const y = originY - ((point.m - 1) * this.scaleY);
+      this.areaGraphics.lineTo(x, y);
+    }
+    
+    const plane = this.planeSprite || this.planeGraphics;
+    if (plane) {
+      this.areaGraphics.lineTo(plane.x, plane.y);
+    }
+    
+    const endX = originX + (this.elapsedSeconds * this.scaleX);
+    this.areaGraphics.lineTo(endX, originY);
+    this.areaGraphics.lineTo(originX, originY);
+    this.areaGraphics.closePath();
+    
+    // Gradient fill (simulated with alpha gradient)
+    this.areaGraphics.fill({ 
+      color: this.COLORS.AREA_START, 
+      alpha: 0.15 
+    });
+
+    // Draw curve line with glow effect
+    this.curveGraphics.moveTo(originX, originY);
+    for (const point of this.curvePoints) {
+      const x = originX + (point.t * this.scaleX);
+      const y = originY - ((point.m - 1) * this.scaleY);
+      this.curveGraphics.lineTo(x, y);
+    }
+    
+    if (plane) {
+      this.curveGraphics.lineTo(plane.x, plane.y);
+    }
+    
+    // Outer glow
+    this.curveGraphics.stroke({ 
+      width: this.LINE_WIDTH + 4, 
+      color: this.COLORS.CURVE_START, 
+      alpha: 0.2 
+    });
+    
+    // Main line
+    this.curveGraphics.stroke({ 
+      width: this.LINE_WIDTH, 
+      color: this.COLORS.CURVE_END 
+    });
+  }
+
+  public updateState(state: GameState, multiplier: number, elapsedSeconds: number): void {
     if (!this.isInitialized || this.isDestroyed) return;
+    
+    if (typeof multiplier !== 'number' || multiplier < 1 || isNaN(multiplier)) return;
+    if (typeof elapsedSeconds !== 'number' || elapsedSeconds < 0 || isNaN(elapsedSeconds)) return;
+
+    this.currentMultiplier = multiplier;
+    this.elapsedSeconds = elapsedSeconds;
 
     if (state !== this.currentState) {
-      this.handleStateChange(state);
+      if (state === GameState.BETTING) {
+        this.resetScene();
+      } else if (state === GameState.CRASHED) {
+        // Start fly-away animation
+        const plane = this.planeSprite || this.planeGraphics;
+        if (plane) {
+          this.flyAwayStartX = plane.x;
+          this.flyAwayStartY = plane.y;
+          this.isFlyingAway = true;
+          this.flyAwayTime = 0;
+          
+          // Create explosion at crash point
+          this.createExplosion(plane.x, plane.y);
+          
+          // Clear exhaust but keep trail for fly-away
+          this.exhaustParticles = [];
+        }
+      }
       this.currentState = state;
     }
 
     if (state === GameState.FLYING) {
-      const lastPoint = this.curvePoints[this.curvePoints.length - 1];
-      if (!lastPoint || elapsedSeconds - lastPoint.t > 0.05 || multiplier - lastPoint.m > 0.05) {
-         this.curvePoints.push({ t: elapsedSeconds, m: multiplier });
+      const plane = this.planeSprite || this.planeGraphics;
+      if (plane) {
+        plane.visible = true;
+        plane.alpha = 1;
       }
-      
-      this.updateViewport(elapsedSeconds, multiplier);
-      this.drawGameLoop(elapsedSeconds, multiplier);
-    } else if (state === GameState.BETTING) {
-      this.resetViewport();
+
+      // Optimized curve point sampling
+      const lastPoint = this.curvePoints[this.curvePoints.length - 1];
+      const threshold = this.isMobile ? 0.08 : 0.05;
+      if (!lastPoint || 
+          Math.abs(elapsedSeconds - lastPoint.t) > threshold || 
+          Math.abs(multiplier - lastPoint.m) > threshold) {
+        this.curvePoints.push({ t: elapsedSeconds, m: multiplier });
+      }
     }
   }
 
-  private handleStateChange(newState: GameState) {
-    if (newState === GameState.BETTING) {
-      this.resetScene();
-    } else if (newState === GameState.CRASHED) {
-      this.triggerCrashSequence();
-    }
-  }
-
-  private resetScene() {
+  private resetScene(): void {
     this.curvePoints = [{ t: 0, m: 1.0 }];
+    this.trailPoints = [];
+    this.exhaustParticles = [];
+    this.explosionParticles = [];
     this.curveGraphics.clear();
     this.areaGraphics.clear();
+    this.trailGraphics.clear();
+    this.explosionGraphics.clear();
+    this.flashGraphics.clear();
     
-    // Clear all effects
-    this.effectsLayer.removeChildren();
-    this.uiLayer.removeChildren();
-    this.particles = [];
-    
-    this.planeContainer.visible = true;
-    this.planeContainer.alpha = 1;
-    this.resetViewport();
-    
-    this.updateViewport(0, 1.0);
-    this.drawGameLoop(0, 1.0);
-  }
+    const plane = this.planeSprite || this.planeGraphics;
+    if (plane) {
+      plane.visible = true;
+      plane.alpha = 1;
+      const originX = this.PADDING_LEFT;
+      const originY = this.height - this.PADDING_BOTTOM;
+      plane.position.set(originX, originY);
+      if (this.planeSprite) {
+        this.planeSprite.rotation = -0.1;
+      }
+    }
 
-  private resetViewport() {
-    this.maxTimeWindow = 8;
+    // Reset animation state
+    this.planeScale = 1.0;
+    this.planeRotationTarget = -0.1;
+    this.planeRotationCurrent = -0.1;
+    this.flightTime = 0;
+    this.isFlyingAway = false;
+    this.flyAwayTime = 0;
+    this.crashFlashAlpha = 0;
+
+    this.maxTimeWindow = 10;
     this.maxMultWindow = 2.0;
+    this.currentMultiplier = 1.0;
+    this.elapsedSeconds = 0;
+    this.updateViewport();
+    this.drawCurve();
   }
 
-  private updateViewport(currentT: number, currentM: number) {
-    if (currentT > this.maxTimeWindow * 0.8) {
-        this.maxTimeWindow = currentT / 0.8;
+  private updateViewport(): void {
+    if (this.elapsedSeconds > this.maxTimeWindow * 0.8) {
+      this.maxTimeWindow = Math.max(this.elapsedSeconds / 0.8, 10);
     }
-    if (currentM > this.maxMultWindow * 0.8) {
-        this.maxMultWindow = currentM / 0.8;
+    if (this.currentMultiplier > this.maxMultWindow * 0.8) {
+      this.maxMultWindow = Math.max(this.currentMultiplier / 0.8, 2.0);
     }
 
-    const paddingLeft = 40;
-    const paddingBottom = 40;
-    // Ensure we don't use 0 if init failed to detect size
-    const availWidth = (this.width || 800) - paddingLeft;
-    const availHeight = (this.height || 600) - paddingBottom;
+    const availWidth = Math.max(this.width - this.PADDING_LEFT, 100);
+    const availHeight = Math.max(this.height - this.PADDING_BOTTOM, 100);
 
-    this.scaleX = availWidth / this.maxTimeWindow;
-    this.scaleY = availHeight / (this.maxMultWindow - 1);
+    this.scaleX = availWidth / Math.max(this.maxTimeWindow, 0.1);
+    this.scaleY = availHeight / Math.max(this.maxMultWindow - 1, 0.1);
   }
 
-  private drawGameLoop(currentT: number, currentM: number) {
-     const paddingLeft = 40;
-     const paddingBottom = 40;
-     const originX = paddingLeft;
-     const originY = (this.height || 600) - paddingBottom;
-
-     // 1. Plane Physics
-     const planeX = originX + (currentT * this.scaleX);
-     const planeY = originY - ((currentM - 1) * this.scaleY);
-
-     this.planeContainer.position.set(planeX, planeY);
-     
-     // Calculate angle
-     if (this.curvePoints.length > 1) {
-        const last = this.curvePoints[this.curvePoints.length - 2];
-        const dx = (currentT - last.t) * this.scaleX;
-        const dy = -((currentM - last.m) * this.scaleY);
-        const angle = Math.atan2(dy, dx);
-        this.planeContainer.rotation = angle * 0.6; // Smoother rotation
-     } else {
-        this.planeContainer.rotation = -0.1; // Initial take-off tilt
-     }
-
-     // 2. Draw Curve & Area
-     this.curveGraphics.clear();
-     this.areaGraphics.clear();
-
-     if (this.curvePoints.length > 0) {
-        this.curveGraphics.moveTo(originX, originY);
-        this.areaGraphics.moveTo(originX, originY);
-
-        for (const p of this.curvePoints) {
-            const px = originX + (p.t * this.scaleX);
-            const py = originY - ((p.m - 1) * this.scaleY);
-            this.curveGraphics.lineTo(px, py);
-            this.areaGraphics.lineTo(px, py);
-        }
-
-        this.curveGraphics.lineTo(planeX, planeY);
-        this.areaGraphics.lineTo(planeX, planeY);
-        this.areaGraphics.lineTo(planeX, originY);
-        this.areaGraphics.lineTo(originX, originY);
-        
-        this.curveGraphics.stroke({ width: 5, color: 0xe11d48 });
-        
-        // Gradient Fill
-        if (this.gradientTexture) {
-             const matrix = new Matrix();
-             // Scale vertical gradient to fit screen height approximately
-             const scaleY = (this.height || 600) / 256; 
-             matrix.scale(1, scaleY);
-
-             this.areaGraphics.fill({ 
-                 texture: this.gradientTexture,
-                 matrix: matrix
-             });
-        } else {
-             this.areaGraphics.fill({ color: 0xe11d48, alpha: 0.3 });
-        }
-     }
-
-     // 3. Grid
-     this.gridGraphics.clear();
-     this.gridGraphics.moveTo(originX, 0);
-     this.gridGraphics.lineTo(originX, (this.height || 600));
-     this.gridGraphics.moveTo(0, originY);
-     this.gridGraphics.lineTo((this.width || 800), originY);
-     this.gridGraphics.stroke({ width: 2, color: 0x334155 });
-  }
-
-  private triggerCrashSequence() {
-    this.planeContainer.visible = false;
-    const { x, y } = this.planeContainer;
-
-    // 1. Intense Screen Shake
-    this.shakeIntensity = 45; 
-
-    // 2. Flash
-    const flash = new Graphics();
-    flash.rect(0, 0, this.width || 800, this.height || 600);
-    flash.fill({ color: 0xffffff, alpha: 0.8 });
-    this.uiLayer.addChild(flash);
+  public resize(width: number, height: number): void {
+    this.width = Math.max(width, 400);
+    this.height = Math.max(height, 300);
     
-    // Flash Animation
-    const fadeFlash = () => {
-        flash.alpha -= 0.1;
-        if (flash.alpha > 0) {
-            requestAnimationFrame(fadeFlash);
-        } else {
-            flash.destroy();
-        }
-    };
-    fadeFlash();
-
-    // 3. Shockwaves (Multiple)
-    for(let i=0; i<3; i++) {
-        const ring = new Graphics();
-        ring.circle(0, 0, 10 + i*5);
-        ring.stroke({ width: 4 - i, color: 0xffffff, alpha: 0.8 });
-        ring.position.set(x, y);
-        this.uiLayer.addChild(ring);
-        this.particles.push({
-            sprite: ring,
-            vx: 0, vy: 0,
-            life: 0.8 + (i * 0.2),
-            maxLife: 0.8 + (i * 0.2),
-            rotationSpeed: 0,
-            type: 'shockwave'
-        });
-    }
-
-    // 4. Fireball
-    const fireColors = [0xffb700, 0xff5e00, 0xff0000];
-    for(let i=0; i<10; i++) {
-        const f = new Graphics();
-        f.circle(0, 0, Math.random() * 20 + 15);
-        f.fill({ color: fireColors[i % fireColors.length], alpha: 0.9 });
-        f.position.set(x + (Math.random()-0.5)*20, y + (Math.random()-0.5)*20);
-        this.uiLayer.addChild(f);
-        this.particles.push({
-            sprite: f,
-            vx: (Math.random() - 0.5) * 2,
-            vy: (Math.random() - 0.5) * 2,
-            life: 0.5 + Math.random() * 0.3,
-            maxLife: 0.8,
-            rotationSpeed: 0,
-            type: 'fire'
-        });
-    }
-
-    // 5. Debris (More intense)
-    const debrisColors = [0xe11d48, 0xbe123c, 0x334155, 0x94a3b8, 0x000000];
-    for (let i = 0; i < 40; i++) {
-        const d = new Graphics();
-        const shapeType = Math.floor(Math.random() * 3);
-        if(shapeType === 0) {
-             d.poly([0,0, 8 + Math.random()*10, -5, 4, 10]);
-        } else if (shapeType === 1) {
-             d.rect(0, 0, Math.random()*12+4, Math.random()*6+2);
-        } else {
-             d.circle(0,0, Math.random()*4+2);
-        }
-        
-        d.fill({ color: debrisColors[i % debrisColors.length] });
-        d.position.set(x, y);
-        
-        this.uiLayer.addChild(d);
-        
-        const angle = Math.random() * Math.PI * 2;
-        const speed = Math.random() * 15 + 5; 
-        
-        this.particles.push({
-            sprite: d,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed,
-            life: 2.0 + Math.random(),
-            maxLife: 3.0,
-            rotationSpeed: (Math.random() - 0.5) * 2,
-            type: 'debris'
-        });
-    }
-
-    // 6. Smoke Plumes
-    for (let i = 0; i < 25; i++) {
-        const s = new Graphics();
-        s.circle(0, 0, Math.random() * 15 + 5);
-        s.fill({ color: 0x475569, alpha: 0.6 });
-        s.position.set(x + (Math.random()-0.5)*30, y + (Math.random()-0.5)*30);
-        this.uiLayer.addChild(s);
-
-        const angle = Math.random() * Math.PI * 2;
-        const speed = Math.random() * 4;
-
-        this.particles.push({
-            sprite: s,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed - 1, // Slight upward drift
-            life: 1.5 + Math.random() * 1.5,
-            maxLife: 3.0,
-            rotationSpeed: (Math.random() - 0.5) * 0.1,
-            type: 'smoke'
-        });
-    }
-  }
-
-  private drawRays() {
-    const g = this.bgRays;
-    const cx = (this.width || 800) / 2;
-    const cy = (this.height || 600) * 2;
-    const radius = Math.max((this.width || 800), (this.height || 600)) * 2.5;
+    // Re-detect mobile
+    const wasMobile = this.isMobile;
+    this.isMobile = this.width < 768 || window.innerWidth < 768;
+    this.quality = this.isMobile ? 0.5 : 1;
     
-    g.clear();
-    const rays = 24;
-    const step = (Math.PI * 2) / rays;
-    
-    for (let i = 0; i < rays; i++) {
-        g.moveTo(cx, cy);
-        const angle = i * step;
-        const angle2 = angle + (step * 0.5);
-        g.arc(cx, cy, radius, angle, angle2);
-        g.lineTo(cx, cy);
-        g.fill({ color: 0xffffff, alpha: 0.03 });
+    // Update quality if mobile status changed
+    if (wasMobile !== this.isMobile && this.app?.renderer) {
+      this.app.renderer.resolution = this.quality;
     }
-    g.pivot.set(cx, cy);
-    g.position.set(cx, cy);
-  }
-
-  public resize(width: number, height: number) {
-    // Update internal dimensions immediately
-    this.width = width;
-    this.height = height;
 
     if (!this.isInitialized || !this.app || this.isDestroyed) return;
     
-    // Safety check before accessing renderer
-    if (this.app.renderer) {
-       this.app.renderer.resize(width, height);
-    }
+    try {
+      if (this.app.renderer) {
+        this.app.renderer.resize(this.width, this.height);
+      }
+
+      // Redraw background and grid
+      this.backgroundLayer.removeChildren();
+      this.drawBackground();
+      this.drawGrid();
+
+      // Redraw plane graphics if using fallback
+      if (this.planeGraphics) {
+        this.drawPlaneGraphics();
+      }
     
-    this.drawRays();
-    this.createGradientTexture(); 
-    
-    if (this.currentState === GameState.IDLE || this.currentState === GameState.BETTING) {
+      if (this.currentState === GameState.IDLE || this.currentState === GameState.BETTING) {
         this.resetScene();
+      } else if (this.currentState === GameState.FLYING) {
+        this.updateViewport();
+        const plane = this.planeSprite || this.planeGraphics;
+        if (plane) {
+          const originX = this.PADDING_LEFT;
+          const originY = this.height - this.PADDING_BOTTOM;
+          const planeX = originX + (this.elapsedSeconds * this.scaleX);
+          const planeY = originY - ((this.currentMultiplier - 1) * this.scaleY);
+          plane.position.set(planeX, planeY);
+        }
+        this.drawCurve();
+      }
+    } catch (error) {
+      console.error('Resize failed', error);
     }
   }
 
-  private safeDestroyApp() {
-     if (this.app) {
-         try {
-             this.app.ticker.remove(this.tickerLoop);
-             // Only attempt destroy if renderer is likely valid or app was created
-             // destroy({removeView: true}) handles context loss usually
-             this.app.destroy({ removeView: true }, { children: true });
-         } catch (e) {
-             console.warn("AviatorScene: Error during app destroy", e);
-         }
-         this.app = null;
-     }
+  private safeDestroyApp(): void {
+    if (!this.app) return;
+
+    try {
+      if (this.app.ticker) {
+        this.app.ticker.remove(this.tickerLoop);
+      }
+
+      if (this.planeSprite) {
+        try {
+          if (this.planeLayer.children.includes(this.planeSprite)) {
+            this.planeLayer.removeChild(this.planeSprite);
+          }
+          this.planeSprite.destroy();
+        } catch (e) {}
+        this.planeSprite = null;
+      }
+
+      if (this.planeGraphics) {
+        try {
+          if (this.planeLayer.children.includes(this.planeGraphics)) {
+            this.planeLayer.removeChild(this.planeGraphics);
+          }
+          this.planeGraphics.destroy();
+        } catch (e) {}
+        this.planeGraphics = null;
+      }
+
+      if (this.app.renderer && this.app.stage) {
+        this.app.destroy({ removeView: true }, { children: true });
+      }
+    } catch (e) {
+      console.warn('Destroy error', e);
+    } finally {
+      this.app = null;
+    }
   }
 
-  public destroy() {
+  public destroy(): void {
+    if (this.isDestroyed) return;
     this.isDestroyed = true;
     this.isInitialized = false;
-
-    // If initializing, defer destruction to init()
-    if (this.isInitializing) {
-        return;
-    }
-
     this.safeDestroyApp();
   }
 }
