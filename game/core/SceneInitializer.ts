@@ -71,7 +71,7 @@ export class SceneInitializer {
     const flashEffect = new FlashEffect(layerManager.effects, dimensions.width, dimensions.height);
     
     const flightAnimation = new FlightAnimation();
-    const flyAwayAnimation = new FlyAwayAnimation(physicsSystem);
+    const flyAwayAnimation = new FlyAwayAnimation(); // No physics system for performance
     
     return {
       layerManager,

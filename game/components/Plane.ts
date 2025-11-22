@@ -12,6 +12,7 @@ export class Plane {
   private sprite: Sprite | null = null;
   private graphics: Graphics | null = null;
   private baseScale: number = 1.0;
+  private currentScale: number = 1.0; // Track scale for graphics redraw optimization
   private state: PlaneState;
 
   constructor(
@@ -77,63 +78,94 @@ export class Plane {
   }
 
   /**
-   * Draw graphics plane
+   * Draw graphics plane - Flat shading for performance
    */
-  private drawGraphics(): void {
+  private drawGraphics(flatShading: boolean = false): void {
     if (!this.graphics) return;
     
     this.graphics.clear();
     const planeSize = this.isMobile ? RESPONSIVE.MOBILE_PLANE_SIZE : RESPONSIVE.DESKTOP_PLANE_SIZE;
-    const size = planeSize * this.state.scale;
+    const size = planeSize * this.currentScale;
     
-    // Outer glow
-    this.graphics.circle(0, 0, size * 0.7);
-    this.graphics.fill({ color: COLORS.GLOW, alpha: 0.15 });
-    
-    this.graphics.circle(0, 0, size * 0.5);
-    this.graphics.fill({ color: COLORS.GLOW, alpha: 0.25 });
-    
-    // Body
-    this.graphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.3);
-    this.graphics.fill({ color: COLORS.CURVE_START });
-    
-    // Body highlight
-    this.graphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.1);
-    this.graphics.fill({ color: 0xffffff, alpha: 0.2 });
-    
-    // Cockpit
-    this.graphics.moveTo(-size * 0.3, -size * 0.15);
-    this.graphics.lineTo(0, -size * 0.4);
-    this.graphics.lineTo(size * 0.3, -size * 0.15);
-    this.graphics.closePath();
-    this.graphics.fill({ color: COLORS.CURVE_START });
+    if (flatShading) {
+      // Flat shading: minimal draw calls for performance
+      // Body
+      this.graphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.3);
+      this.graphics.fill({ color: COLORS.CURVE_START });
+      
+      // Cockpit
+      this.graphics.moveTo(-size * 0.3, -size * 0.15);
+      this.graphics.lineTo(0, -size * 0.4);
+      this.graphics.lineTo(size * 0.3, -size * 0.15);
+      this.graphics.closePath();
+      this.graphics.fill({ color: COLORS.CURVE_START });
 
-    // Window
-    this.graphics.circle(size * 0.15, 0, size * 0.12);
-    this.graphics.fill({ color: 0xffffff, alpha: 0.3 });
-    
-    this.graphics.circle(size * 0.15, 0, size * 0.08);
-    this.graphics.fill({ color: 0x38bdf8 });
-    
-    // Accent lines
-    this.graphics.moveTo(-size * 0.2, size * 0.1);
-    this.graphics.lineTo(size * 0.2, size * 0.1);
-    this.graphics.stroke({ width: 2, color: 0xffffff, alpha: 0.3 });
+      // Window (simplified)
+      this.graphics.circle(size * 0.15, 0, size * 0.08);
+      this.graphics.fill({ color: 0x38bdf8 });
+    } else {
+      // Normal shading with glow (only when not in fly-away)
+      // Outer glow
+      this.graphics.circle(0, 0, size * 0.7);
+      this.graphics.fill({ color: COLORS.GLOW, alpha: 0.15 });
+      
+      this.graphics.circle(0, 0, size * 0.5);
+      this.graphics.fill({ color: COLORS.GLOW, alpha: 0.25 });
+      
+      // Body
+      this.graphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.3);
+      this.graphics.fill({ color: COLORS.CURVE_START });
+      
+      // Body highlight
+      this.graphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.1);
+      this.graphics.fill({ color: 0xffffff, alpha: 0.2 });
+      
+      // Cockpit
+      this.graphics.moveTo(-size * 0.3, -size * 0.15);
+      this.graphics.lineTo(0, -size * 0.4);
+      this.graphics.lineTo(size * 0.3, -size * 0.15);
+      this.graphics.closePath();
+      this.graphics.fill({ color: COLORS.CURVE_START });
+
+      // Window
+      this.graphics.circle(size * 0.15, 0, size * 0.12);
+      this.graphics.fill({ color: 0xffffff, alpha: 0.3 });
+      
+      this.graphics.circle(size * 0.15, 0, size * 0.08);
+      this.graphics.fill({ color: 0x38bdf8 });
+      
+      // Accent lines
+      this.graphics.moveTo(-size * 0.2, size * 0.1);
+      this.graphics.lineTo(size * 0.2, size * 0.1);
+      this.graphics.stroke({ width: 2, color: 0xffffff, alpha: 0.3 });
+    }
   }
 
   /**
    * Update plane position and rotation
    */
-  public update(x: number, y: number, rotation: number, scale: number, alpha: number, deltaTime: number): void {
-    // Smooth position interpolation
-    const smoothFactor = expSmooth(15, deltaTime);
-    this.state.x += (x - this.state.x) * smoothFactor;
-    this.state.y += (y - this.state.y) * smoothFactor;
+  public update(x: number, y: number, rotation: number, scale: number, alpha: number, deltaTime: number, blur?: number): void {
+    // Direct position update for performance (no smoothing during fly-away)
+    if (blur !== undefined && blur > 0) {
+      // During fly-away: minimal interpolation for blur effect
+      const smoothFactor = 0.3; // Fixed factor, faster than expSmooth
+      this.state.x += (x - this.state.x) * smoothFactor;
+      this.state.y += (y - this.state.y) * smoothFactor;
+    } else {
+      // Normal flight: smooth interpolation
+      const smoothFactor = expSmooth(15, deltaTime);
+      this.state.x += (x - this.state.x) * smoothFactor;
+      this.state.y += (y - this.state.y) * smoothFactor;
+    }
     
-    // Smooth rotation interpolation
-    this.state.rotationTarget = rotation;
-    const rotationSmooth = expSmooth(10, deltaTime);
-    this.state.rotation += (this.state.rotationTarget - this.state.rotation) * rotationSmooth;
+    // Simple rotation (no interpolation during fly-away for performance)
+    if (blur !== undefined && blur > 0) {
+      this.state.rotation = rotation; // Direct rotation
+    } else {
+      this.state.rotationTarget = rotation;
+      const rotationSmooth = expSmooth(10, deltaTime);
+      this.state.rotation += (this.state.rotationTarget - this.state.rotation) * rotationSmooth;
+    }
     
     this.state.scale = scale;
     this.state.alpha = alpha;
@@ -144,12 +176,24 @@ export class Plane {
       this.sprite.rotation = this.state.rotation;
       this.sprite.scale.set(this.baseScale * this.state.scale);
       this.sprite.alpha = this.state.alpha;
+      
+      // Apply blur effect via filters (if available, else simulate with alpha)
+      // For performance, we'll simulate blur with reduced alpha on edges
     } else if (this.graphics) {
       this.graphics.position.set(this.state.x, this.state.y);
       this.graphics.alpha = this.state.alpha;
-      this.drawGraphics();
+      // Redraw only if scale changed significantly (performance optimization)
+      const scaleDiff = Math.abs(scale - this.currentScale);
+      if (scaleDiff > 0.01 || blur !== undefined) {
+        // Always redraw during blur phase or when scale changes
+        this.currentScale = scale;
+        // Use flat shading during fly-away for performance
+        this.drawGraphics(blur !== undefined && blur > 0);
+      }
     }
   }
+
+  private planeScale: number = 1.0;
 
   /**
    * Get current position

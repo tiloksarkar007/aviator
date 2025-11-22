@@ -32,6 +32,33 @@ export class StateHandler {
   ) {}
 
   /**
+   * Get current plane velocity and direction for fly-away continuity
+   */
+  public getPlaneVelocity(): { vx: number; vy: number; direction: number } {
+    // Calculate velocity from curve points for smooth transition
+    const curvePoints = this.flightAnimation.getCurvePoints();
+    if (curvePoints.length >= 2) {
+      const prev = curvePoints[curvePoints.length - 2];
+      const curr = curvePoints[curvePoints.length - 1];
+      const viewport = this.viewportSystem.getViewport();
+      
+      const dx = (curr.t - prev.t) * viewport.scaleX;
+      const dy = -((curr.m - prev.m) * viewport.scaleY);
+      
+      // Calculate actual velocity (pixels per second)
+      const timeDelta = Math.max(curr.t - prev.t, 0.016); // Minimum 1 frame
+      const vx = (dx / timeDelta) * 60; // Convert to per-second
+      const vy = (dy / timeDelta) * 60;
+      
+      // Calculate direction angle
+      const direction = Math.atan2(dy, dx);
+      
+      return { vx, vy, direction };
+    }
+    return { vx: 0, vy: 0, direction: -0.1 };
+  }
+
+  /**
    * Update flight state
    */
   public updateFlight(
@@ -69,25 +96,71 @@ export class StateHandler {
   }
 
   /**
-   * Update fly-away state
+   * Update fly-away state - Performance optimized
    */
   public updateFlyAway(deltaTime: number): void {
     const flyAway = this.flyAwayAnimation.update(this.dimensions, deltaTime);
     
     if (flyAway.active) {
-      this.plane.update(flyAway.x, flyAway.y, flyAway.rotation, flyAway.scale, flyAway.alpha, deltaTime);
+      // Update plane with blur effect (minimal interpolation for performance)
+      this.plane.update(flyAway.x, flyAway.y, flyAway.rotation, flyAway.scale, flyAway.alpha, deltaTime, flyAway.blur);
       this.plane.setVisible(true);
       
-      this.explosionEffect.update(deltaTime);
-      this.flashEffect.update(deltaTime);
-      this.trailEffect.fade();
-      
+      // Reduced explosion updates for performance
       const planePos = this.plane.getPosition();
-      this.trailEffect.addPoint(planePos.x, planePos.y);
+      if (flyAway.progress < 0.6) {
+        // Only update explosion in first 60%
+        this.explosionEffect.update(deltaTime, planePos.x, planePos.y);
+      }
       
-      this.explosionEffect.render();
-      this.flashEffect.render();
-      this.trailEffect.render();
+      // Flash only in first 30%
+      if (flyAway.progress < 0.3) {
+        this.flashEffect.update(deltaTime);
+      }
+      
+      // Minimal trail updates for battery efficiency
+      const velocity = this.flyAwayAnimation.getVelocity();
+      const speed = Math.sqrt(velocity.vx * velocity.vx + velocity.vy * velocity.vy);
+      const progress = flyAway.progress;
+      
+      // Simple intensity calculation
+      const trailIntensity = Math.max(0.2, 1.0 - progress * 0.6);
+      this.trailEffect.setIntensity(trailIntensity);
+      
+      // Reduced trail points for performance
+      if (progress < 0.6) {
+        // Add trail points only in first 60%
+        if (speed > 200) {
+          // High speed: occasional point
+          if (Math.random() > 0.6) {
+            this.trailEffect.addPoint(planePos.x, planePos.y, trailIntensity);
+          }
+        } else if (speed > 100) {
+          // Medium speed: less frequent
+          if (Math.random() > 0.7) {
+            this.trailEffect.addPoint(planePos.x, planePos.y, trailIntensity);
+          }
+        }
+        // Low speed: no trail points (performance)
+      }
+      
+      // Simple fade (reduced updates)
+      if (progress > 0.4) {
+        this.trailEffect.fade();
+      }
+      
+      // Reduced render calls
+      const renderFrame = Math.floor(flyAway.progress * 120); // Render every 8ms
+      if (renderFrame % 2 === 0 || flyAway.progress < 0.3) {
+        // Render every other frame after 30%, always render early phase
+        if (flyAway.progress < 0.6) {
+          this.explosionEffect.render();
+        }
+        if (flyAway.progress < 0.3) {
+          this.flashEffect.render();
+        }
+        this.trailEffect.render(progress < 0.3); // Force render early phase
+      }
     } else {
       this.plane.setVisible(false);
       this.explosionEffect.clear();
@@ -137,7 +210,7 @@ export class StateHandler {
   }
 
   /**
-   * Handle state transition
+   * Handle state transition with aligned direction
    */
   public handleStateTransition(
     newState: GameState,
@@ -146,9 +219,25 @@ export class StateHandler {
     planeRotation: number
   ): void {
     if (newState === GameState.CRASHED && oldState !== GameState.CRASHED) {
-      this.flyAwayAnimation.start(planePos.x, planePos.y, planeRotation);
+      // Get velocity and direction from flight path for proper alignment
+      const velocity = this.getPlaneVelocity();
+      
+      // Start fly-away with aligned direction
+      this.flyAwayAnimation.start(
+        planePos.x,
+        planePos.y,
+        planeRotation,
+        velocity.vx,
+        velocity.vy
+      );
+      
+      // Create premium explosion
       this.explosionEffect.create(planePos.x, planePos.y);
+      
+      // Trigger flash
       this.flashEffect.trigger();
+      
+      // Clear exhaust
       this.exhaustEffect.clear();
     }
   }

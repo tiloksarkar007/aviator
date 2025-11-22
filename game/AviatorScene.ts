@@ -136,7 +136,12 @@ export class AviatorScene {
         this.resetScene();
       } else if (state === GameState.CRASHED) {
         const planePos = this.components.plane.getPosition();
-        this.stateHandler.handleStateTransition(state, this.currentState, planePos, this.components.plane.getRotation());
+        this.stateHandler.handleStateTransition(
+          state,
+          this.currentState,
+          planePos,
+          this.components.plane.getRotation()
+        );
       }
       this.currentState = state;
     }

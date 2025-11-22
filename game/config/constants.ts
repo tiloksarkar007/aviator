@@ -16,17 +16,23 @@ export const COLORS = {
   TRAIL: 0xff006e,
   EXPLOSION: 0xff6b00,
   EXPLOSION_FIRE: 0xffaa00,
+  EXPLOSION_SPARK: 0xffff00,
+  EXPLOSION_SMOKE: 0x888888,
   FLASH: 0xffffff,
+  FLASH_COLD: 0x00aaff,
 } as const;
 
 export const PHYSICS = {
   GRAVITY: 300, // pixels per second squared
   AIR_RESISTANCE: 0.98, // per second
-  EXPLOSION_FORCE: 400, // pixels per second
-  FLY_AWAY_THRUST: 800, // pixels per second squared
-  FLY_AWAY_ANGULAR_VELOCITY: Math.PI * 3, // radians per second
+  EXPLOSION_FORCE: 600, // pixels per second (increased for premium effect)
+  EXPLOSION_SECONDARY_FORCE: 400, // pixels per second
+  FLY_AWAY_THRUST: 1200, // pixels per second squared (increased for premium effect)
+  FLY_AWAY_ANGULAR_VELOCITY: Math.PI * 4, // radians per second (faster spin)
   PARTICLE_FRICTION: 0.95, // per frame
   PARTICLE_GRAVITY: 150, // pixels per second squared
+  FLY_AWAY_INITIAL_BOOST: 1200, // initial velocity boost
+  FLY_AWAY_TRAJECTORY_ANGLE: Math.PI / 3.5, // ~51 degrees for more dramatic arc
 } as const;
 
 export const LAYERS = {
