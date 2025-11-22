@@ -2,12 +2,12 @@ import { Application, Container, Sprite, Graphics, Ticker, Texture, Assets } fro
 import { GameState } from '../types';
 
 /**
- * AviatorScene - Premium, Modern, Performance-Optimized
+ * AviatorScene - Premium, Physics-Based, High-Performance
  * Features:
- * - Modern futuristic aesthetics with gradients and glows
+ * - Physics-based animations with velocity, acceleration, and forces
+ * - Modern futuristic aesthetics
  * - Mobile-first performance optimization
- * - Responsive design with adaptive quality
- * - Smooth animations and premium visual effects
+ * - Smooth interpolations and premium visual effects
  */
 export class AviatorScene {
   private app: Application | null = null;
@@ -39,8 +39,10 @@ export class AviatorScene {
   private elapsedSeconds: number = 0;
   private curvePoints: Array<{ t: number; m: number }> = [];
   private trailPoints: Array<{ x: number; y: number; alpha: number }> = [];
-  private exhaustParticles: Array<{ x: number; y: number; vx: number; vy: number; life: number; maxLife: number }> = [];
-  private explosionParticles: Array<{ x: number; y: number; vx: number; vy: number; life: number; maxLife: number; size: number; color: number }> = [];
+  
+  // Physics-based particles
+  private exhaustParticles: Array<Particle> = [];
+  private explosionParticles: Array<ExplosionParticle> = [];
   
   // Animation state
   private planeScale: number = 1.0;
@@ -48,13 +50,33 @@ export class AviatorScene {
   private planeRotationCurrent: number = -0.1;
   private flightTime: number = 0;
   
-  // Fly-away animation state
+  // Physics-based fly-away animation
+  private flyAwayPhysics: {
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    rotation: number;
+    angularVelocity: number;
+    scale: number;
+    alpha: number;
+    active: boolean;
+  } = {
+    x: 0,
+    y: 0,
+    vx: 0,
+    vy: 0,
+    rotation: 0,
+    angularVelocity: 0,
+    scale: 1.0,
+    alpha: 1.0,
+    active: false
+  };
+  
   private flyAwayStartX: number = 0;
   private flyAwayStartY: number = 0;
-  private flyAwayTime: number = 0;
-  private flyAwayDuration: number = 1.5; // seconds
-  private isFlyingAway: boolean = false;
   private crashFlashAlpha: number = 0;
+  private lastFrameTime: number = 0;
   
   // Viewport
   private scaleX: number = 1;
@@ -66,8 +88,14 @@ export class AviatorScene {
   private isInitialized: boolean = false;
   private isDestroyed: boolean = false;
   private isMobile: boolean = false;
-  private quality: number = 1; // 0.5 for mobile, 1 for desktop
-  private frameSkip: number = 0; // Skip frames on mobile for performance
+  private quality: number = 1;
+  private frameSkip: number = 0;
+  private deltaTime: number = 0;
+  
+  // Performance optimization: Object pooling
+  private particlePool: Array<Particle> = [];
+  private explosionParticlePool: Array<ExplosionParticle> = [];
+  private readonly MAX_POOL_SIZE = 100;
   
   // Responsive constants
   private get PADDING_LEFT(): number {
@@ -79,7 +107,7 @@ export class AviatorScene {
   }
   
   private get PLANE_SIZE(): number {
-    return this.isMobile ? 72 : 90; // 1.5x increased size
+    return this.isMobile ? 72 : 90;
   }
   
   private get LINE_WIDTH(): number {
@@ -102,6 +130,17 @@ export class AviatorScene {
     EXPLOSION_FIRE: 0xffaa00,
     FLASH: 0xffffff,
   };
+  
+  // Physics constants
+  private readonly PHYSICS = {
+    GRAVITY: 300, // pixels per second squared
+    AIR_RESISTANCE: 0.98, // per second
+    EXPLOSION_FORCE: 400, // pixels per second
+    FLY_AWAY_THRUST: 800, // pixels per second squared
+    FLY_AWAY_ANGULAR_VELOCITY: Math.PI * 3, // radians per second
+    PARTICLE_FRICTION: 0.95, // per frame
+    PARTICLE_GRAVITY: 150, // pixels per second squared
+  };
 
   constructor(container: HTMLDivElement) {
     if (!container) throw new Error('Container required');
@@ -111,7 +150,6 @@ export class AviatorScene {
     this.width = Math.max(rect.width || 800, 400);
     this.height = Math.max(rect.height || 600, 300);
     
-    // Detect mobile
     this.isMobile = this.width < 768 || window.innerWidth < 768;
     this.quality = this.isMobile ? 0.5 : 1;
 
@@ -123,7 +161,6 @@ export class AviatorScene {
     this.effectsLayer = new Container();
     this.planeLayer = new Container();
     
-    // Layer order (bottom to top)
     this.stage.addChild(this.backgroundLayer);
     this.stage.addChild(this.gridLayer);
     this.stage.addChild(this.curveLayer);
@@ -144,6 +181,52 @@ export class AviatorScene {
     this.effectsLayer.addChild(this.trailGraphics);
     this.effectsLayer.addChild(this.explosionGraphics);
     this.effectsLayer.addChild(this.flashGraphics);
+    
+    // Initialize particle pools
+    this.initParticlePools();
+  }
+
+  private initParticlePools(): void {
+    // Pre-allocate particles for better performance
+    for (let i = 0; i < this.MAX_POOL_SIZE; i++) {
+      this.particlePool.push({
+        x: 0, y: 0,
+        vx: 0, vy: 0,
+        life: 0, maxLife: 0
+      });
+      this.explosionParticlePool.push({
+        x: 0, y: 0,
+        vx: 0, vy: 0,
+        life: 0, maxLife: 0,
+        size: 0, color: 0
+      });
+    }
+  }
+
+  private getParticle(): Particle {
+    if (this.particlePool.length > 0) {
+      return this.particlePool.pop()!;
+    }
+    return { x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0 };
+  }
+
+  private recycleParticle(particle: Particle): void {
+    if (this.particlePool.length < this.MAX_POOL_SIZE) {
+      this.particlePool.push(particle);
+    }
+  }
+
+  private getExplosionParticle(): ExplosionParticle {
+    if (this.explosionParticlePool.length > 0) {
+      return this.explosionParticlePool.pop()!;
+    }
+    return { x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0, size: 0, color: 0 };
+  }
+
+  private recycleExplosionParticle(particle: ExplosionParticle): void {
+    if (this.explosionParticlePool.length < this.MAX_POOL_SIZE) {
+      this.explosionParticlePool.push(particle);
+    }
   }
 
   public async init(): Promise<void> {
@@ -154,17 +237,15 @@ export class AviatorScene {
       this.width = Math.max(rect.width || 800, 400);
       this.height = Math.max(rect.height || 600, 300);
       
-      // Re-detect mobile on init
       this.isMobile = this.width < 768 || window.innerWidth < 768;
       this.quality = this.isMobile ? 0.5 : 1;
 
-      // Create PixiJS app with performance settings
       this.app = new Application();
       await this.app.init({
         width: this.width,
         height: this.height,
         background: this.COLORS.BG_END,
-        antialias: !this.isMobile, // Disable antialiasing on mobile for performance
+        antialias: !this.isMobile,
         resolution: this.quality,
         autoDensity: true,
         powerPreference: 'high-performance',
@@ -175,7 +256,6 @@ export class AviatorScene {
         return;
       }
 
-      // Style canvas
       const canvas = this.app.canvas as HTMLCanvasElement;
       canvas.style.width = '100%';
       canvas.style.height = '100%';
@@ -188,26 +268,18 @@ export class AviatorScene {
       this.container.appendChild(canvas);
       this.app.stage.addChild(this.stage);
 
-      // Draw background gradient
       this.drawBackground();
-      
-      // Draw grid
       this.drawGrid();
-      
-      // Create plane
       await this.createPlane();
-      
-      // Initialize scene
       this.resetScene();
 
-      // Start ticker
       if (this.app.ticker) {
         this.app.ticker.add(this.tickerLoop);
       }
 
       this.isInitialized = true;
+      this.lastFrameTime = performance.now();
       
-      // Force initial render
       if (this.app.renderer) {
         this.app.renderer.render(this.app.stage);
       }
@@ -221,10 +293,7 @@ export class AviatorScene {
   private drawBackground(): void {
     const bg = new Graphics();
     bg.rect(0, 0, this.width, this.height);
-    bg.fill({ 
-      color: this.COLORS.BG_START,
-      alpha: 1 
-    });
+    bg.fill({ color: this.COLORS.BG_START, alpha: 1 });
     this.backgroundLayer.addChild(bg);
   }
 
@@ -241,7 +310,7 @@ export class AviatorScene {
     const gridSpacing = this.isMobile ? 40 : 60;
     const majorLineEvery = 3;
     
-    // Vertical lines (time axis)
+    // Vertical lines
     for (let i = 0; i <= Math.ceil(availWidth / gridSpacing); i++) {
       const x = originX + (i * gridSpacing);
       const isMajor = i % majorLineEvery === 0;
@@ -255,7 +324,7 @@ export class AviatorScene {
       });
     }
     
-    // Horizontal lines (multiplier axis)
+    // Horizontal lines
     for (let i = 0; i <= Math.ceil(availHeight / gridSpacing); i++) {
       const y = originY - (i * gridSpacing);
       const isMajor = i % majorLineEvery === 0;
@@ -277,7 +346,6 @@ export class AviatorScene {
         this.planeSprite = new Sprite(texture);
         this.planeSprite.anchor.set(0.5, 0.5);
         
-        // Store base scale for pulse effect
         this.planeSpriteBaseScale = this.PLANE_SIZE / Math.max(texture.width, texture.height);
         this.planeSprite.scale.set(this.planeSpriteBaseScale);
         
@@ -290,7 +358,6 @@ export class AviatorScene {
       console.warn('Sprite failed, using graphics fallback', error);
     }
 
-    // Fallback: Premium graphics plane
     this.planeGraphics = new Graphics();
     this.drawPlaneGraphics();
     this.planeGraphics.visible = true;
@@ -305,14 +372,14 @@ export class AviatorScene {
     
     const size = this.PLANE_SIZE * this.planeScale;
     
-    // Outer glow (premium effect)
+    // Outer glow
     this.planeGraphics.circle(0, 0, size * 0.7);
     this.planeGraphics.fill({ color: this.COLORS.GLOW, alpha: 0.15 });
     
     this.planeGraphics.circle(0, 0, size * 0.5);
     this.planeGraphics.fill({ color: this.COLORS.GLOW, alpha: 0.25 });
     
-    // Body with gradient effect (simulated)
+    // Body
     this.planeGraphics.rect(-size * 0.4, -size * 0.15, size * 0.8, size * 0.3);
     this.planeGraphics.fill({ color: this.COLORS.CURVE_START });
     
@@ -327,7 +394,7 @@ export class AviatorScene {
     this.planeGraphics.closePath();
     this.planeGraphics.fill({ color: this.COLORS.CURVE_START });
 
-    // Window with glow
+    // Window
     this.planeGraphics.circle(size * 0.15, 0, size * 0.12);
     this.planeGraphics.fill({ color: 0xffffff, alpha: 0.3 });
     
@@ -361,31 +428,32 @@ export class AviatorScene {
     const plane = this.planeSprite || this.planeGraphics;
     if (!plane) return;
 
-    // Frame skipping for mobile performance
+    // Calculate deltaTime for physics
+    const now = performance.now();
+    this.deltaTime = Math.min((now - this.lastFrameTime) / 1000, 0.033); // Cap at 30fps minimum
+    this.lastFrameTime = now;
+
+    // Frame skipping for mobile
     this.frameSkip++;
     const shouldUpdate = !this.isMobile || this.frameSkip % 2 === 0;
-    if (!shouldUpdate && this.currentState !== GameState.FLYING) {
+    if (!shouldUpdate && this.currentState !== GameState.FLYING && !this.flyAwayPhysics.active) {
       return;
     }
     if (this.frameSkip > 1000) this.frameSkip = 0;
 
     // Update based on state
     if (this.currentState === GameState.FLYING) {
-      // Always ensure plane is visible during flight
       plane.visible = true;
       plane.alpha = 1;
       this.updateFlight(ticker);
-    } else if (this.currentState === GameState.CRASHED && this.isFlyingAway) {
-      // Keep plane visible during fly-away animation
+    } else if (this.currentState === GameState.CRASHED && this.flyAwayPhysics.active) {
       plane.visible = true;
       this.updateFlyAway(ticker);
     } else if (this.currentState === GameState.BETTING) {
-      // Always ensure plane is visible during betting
       plane.visible = true;
       plane.alpha = 1;
       this.updateBetting(ticker);
     } else {
-      // Always ensure plane is visible during idle
       plane.visible = true;
       plane.alpha = 1;
       this.updateIdle();
@@ -397,23 +465,23 @@ export class AviatorScene {
     const originY = this.height - this.PADDING_BOTTOM;
     
     this.updateViewport();
-    this.flightTime += ticker.deltaMS / 1000;
+    this.flightTime += this.deltaTime;
     
     const planeX = originX + (this.elapsedSeconds * this.scaleX);
     const planeY = originY - ((this.currentMultiplier - 1) * this.scaleY);
     
     const plane = this.planeSprite || this.planeGraphics;
     if (plane) {
-      // Smooth position with slight easing
+      // Smooth position interpolation
       const currentX = plane.x || planeX;
       const currentY = plane.y || planeY;
-      const smoothFactor = 0.15;
+      const smoothFactor = 1 - Math.exp(-15 * this.deltaTime); // Exponential smoothing
       plane.position.set(
         currentX + (planeX - currentX) * smoothFactor,
         currentY + (planeY - currentY) * smoothFactor
       );
       
-      // Premium rotation with smooth interpolation
+      // Rotation based on curve direction
       if (this.curvePoints.length > 1) {
         const prev = this.curvePoints[this.curvePoints.length - 2];
         const dx = (this.elapsedSeconds - prev.t) * this.scaleX;
@@ -425,15 +493,13 @@ export class AviatorScene {
       
       // Smooth rotation interpolation
       const rotationDiff = this.planeRotationTarget - this.planeRotationCurrent;
-      this.planeRotationCurrent += rotationDiff * 0.1;
+      this.planeRotationCurrent += rotationDiff * (1 - Math.exp(-10 * this.deltaTime));
       
       if (this.planeSprite) {
         this.planeSprite.rotation = this.planeRotationCurrent;
-      } else if (this.planeGraphics) {
-        // For graphics, we'd need to redraw, but rotation is less critical
       }
       
-      // Premium scale pulsing effect (subtle breathing)
+      // Subtle scale pulsing
       const pulseSpeed = 2;
       const pulseAmount = 0.03;
       this.planeScale = 1.0 + Math.sin(this.flightTime * pulseSpeed) * pulseAmount;
@@ -443,13 +509,9 @@ export class AviatorScene {
       }
     }
     
-    // Update exhaust particles
     this.updateExhaustParticles(planeX, planeY);
-    
-    // Update trail
     this.updateTrail(planeX, planeY);
     
-    // Draw curve (optimized - only when needed)
     if (this.frameSkip % (this.isMobile ? 2 : 1) === 0) {
       this.drawCurve();
     }
@@ -486,65 +548,75 @@ export class AviatorScene {
     this.drawCurve();
   }
 
+  // Physics-based fly-away animation
   private updateFlyAway(ticker: Ticker): void {
-    this.flyAwayTime += ticker.deltaMS / 1000;
-    const progress = Math.min(this.flyAwayTime / this.flyAwayDuration, 1.0);
-    
-    const plane = this.planeSprite || this.planeGraphics;
-    if (!plane) return;
+    const physics = this.flyAwayPhysics;
+    if (!physics.active) return;
 
-    // Easing function for smooth acceleration
-    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-    const easedProgress = easeOutCubic(progress);
-
-    // Calculate fly-away trajectory (up and to the right, dramatic angle)
+    // Physics update: Apply thrust and forces
     const angle = Math.PI / 4; // 45 degrees up-right
-    const distance = Math.max(this.width, this.height) * 1.5;
-    const targetX = this.flyAwayStartX + Math.cos(angle) * distance * easedProgress;
-    const targetY = this.flyAwayStartY - Math.sin(angle) * distance * easedProgress;
-
-    // Update position with smooth interpolation
-    const currentX = plane.x || this.flyAwayStartX;
-    const currentY = plane.y || this.flyAwayStartY;
-    plane.position.set(
-      currentX + (targetX - currentX) * 0.2,
-      currentY + (targetY - currentY) * 0.2
+    const thrustX = Math.cos(angle) * this.PHYSICS.FLY_AWAY_THRUST * this.deltaTime;
+    const thrustY = -Math.sin(angle) * this.PHYSICS.FLY_AWAY_THRUST * this.deltaTime;
+    
+    // Update velocity with thrust
+    physics.vx += thrustX;
+    physics.vy += thrustY;
+    
+    // Apply air resistance
+    physics.vx *= Math.pow(this.PHYSICS.AIR_RESISTANCE, this.deltaTime);
+    physics.vy *= Math.pow(this.PHYSICS.AIR_RESISTANCE, this.deltaTime);
+    
+    // Update position
+    physics.x += physics.vx * this.deltaTime;
+    physics.y += physics.vy * this.deltaTime;
+    
+    // Angular velocity (spinning)
+    physics.angularVelocity *= 0.98; // Angular damping
+    physics.rotation += physics.angularVelocity * this.deltaTime;
+    
+    // Scale increases smoothly
+    physics.scale = 1.0 + (1.0 - Math.exp(-2 * (this.flyAwayPhysics.x - this.flyAwayStartX) / this.width)) * 0.6;
+    
+    // Fade out based on distance
+    const distanceTraveled = Math.sqrt(
+      Math.pow(physics.x - this.flyAwayStartX, 2) + 
+      Math.pow(physics.y - this.flyAwayStartY, 2)
     );
-
-    // Dramatic rotation (spinning as it flies away)
-    const rotationSpeed = Math.PI * 2; // Full rotation per second
-    if (this.planeSprite) {
-      this.planeSprite.rotation = this.planeRotationCurrent + (rotationSpeed * this.flyAwayTime * 0.5);
+    const maxDistance = Math.max(this.width, this.height) * 1.5;
+    physics.alpha = Math.max(0, 1 - (distanceTraveled / maxDistance));
+    
+    // Update plane position
+    const plane = this.planeSprite || this.planeGraphics;
+    if (plane) {
+      plane.position.set(physics.x, physics.y);
+      plane.alpha = physics.alpha;
+      
+      if (this.planeSprite) {
+        this.planeSprite.rotation = physics.rotation;
+        this.planeSprite.scale.set(this.planeSpriteBaseScale * physics.scale);
+      } else if (this.planeGraphics) {
+        this.planeScale = physics.scale;
+        this.drawPlaneGraphics();
+      }
     }
-
-    // Scale up as it flies away (zoom effect)
-    const scaleMultiplier = 1.0 + (easedProgress * 0.5);
-    if (this.planeSprite) {
-      this.planeSprite.scale.set(this.planeSpriteBaseScale * scaleMultiplier);
-    } else if (this.planeGraphics) {
-      this.planeScale = scaleMultiplier;
-      this.drawPlaneGraphics();
-    }
-
-    // Fade out
-    plane.alpha = 1.0 - easedProgress;
-
-    // Update explosion particles
+    
+    // Update effects
     this.updateExplosionParticles(ticker);
-
-    // Update flash effect
     this.updateCrashFlash(ticker);
-
-    // Update trail (fade out)
-    this.updateTrail(plane.x, plane.y);
+    this.updateTrail(physics.x, physics.y);
+    
+    // Fade trail
     this.trailPoints.forEach(point => {
-      point.alpha *= 0.95;
+      point.alpha *= 0.92;
     });
-
-    // Clean up when animation completes
-    if (progress >= 1.0) {
+    
+    // Clean up when off-screen or invisible
+    if (physics.alpha <= 0 || 
+        physics.x > this.width + 200 || 
+        physics.y < -200 || 
+        physics.x < -200) {
       plane.visible = false;
-      this.isFlyingAway = false;
+      physics.active = false;
       this.explosionParticles = [];
       this.trailPoints = [];
       this.explosionGraphics.clear();
@@ -556,50 +628,66 @@ export class AviatorScene {
     const particleCount = this.isMobile ? 30 : 50;
     
     for (let i = 0; i < particleCount; i++) {
+      const particle = this.getExplosionParticle();
       const angle = (Math.PI * 2 * i) / particleCount + (Math.random() - 0.5) * 0.5;
-      const speed = 2 + Math.random() * 4;
+      const speed = this.PHYSICS.EXPLOSION_FORCE * (0.5 + Math.random() * 0.5);
       const life = 0.5 + Math.random() * 0.5;
-      const size = 3 + Math.random() * 8;
-      const color = Math.random() > 0.5 ? this.COLORS.EXPLOSION : this.COLORS.EXPLOSION_FIRE;
       
-      this.explosionParticles.push({
-        x: x + (Math.random() - 0.5) * 20,
-        y: y + (Math.random() - 0.5) * 20,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: life,
-        maxLife: life,
-        size: size,
-        color: color
-      });
+      particle.x = x + (Math.random() - 0.5) * 20;
+      particle.y = y + (Math.random() - 0.5) * 20;
+      particle.vx = Math.cos(angle) * speed;
+      particle.vy = Math.sin(angle) * speed;
+      particle.life = life;
+      particle.maxLife = life;
+      particle.size = 3 + Math.random() * 8;
+      particle.color = Math.random() > 0.5 ? this.COLORS.EXPLOSION : this.COLORS.EXPLOSION_FIRE;
+      
+      this.explosionParticles.push(particle);
     }
   }
 
   private updateExplosionParticles(ticker: Ticker): void {
-    // Update existing particles
-    this.explosionParticles = this.explosionParticles.filter(particle => {
-      particle.x += particle.vx;
-      particle.y += particle.vy;
-      particle.vx *= 0.98; // Friction
-      particle.vy *= 0.98;
-      particle.vy += 0.1; // Gravity
-      particle.life -= ticker.deltaMS / 1000;
-      return particle.life > 0;
-    });
+    // Update and filter particles with physics
+    const aliveParticles: ExplosionParticle[] = [];
+    
+    for (const particle of this.explosionParticles) {
+      // Apply gravity
+      particle.vy += this.PHYSICS.PARTICLE_GRAVITY * this.deltaTime;
+      
+      // Apply air resistance
+      particle.vx *= Math.pow(this.PHYSICS.PARTICLE_FRICTION, this.deltaTime * 60);
+      particle.vy *= Math.pow(this.PHYSICS.PARTICLE_FRICTION, this.deltaTime * 60);
+      
+      // Update position
+      particle.x += particle.vx * this.deltaTime;
+      particle.y += particle.vy * this.deltaTime;
+      
+      // Update life
+      particle.life -= this.deltaTime;
+      
+      if (particle.life > 0) {
+        aliveParticles.push(particle);
+      } else {
+        this.recycleExplosionParticle(particle);
+      }
+    }
+    
+    this.explosionParticles = aliveParticles;
 
-    // Draw particles
+    // Batch draw particles
     this.explosionGraphics.clear();
     for (const particle of this.explosionParticles) {
       const alpha = particle.life / particle.maxLife;
       const size = particle.size * alpha;
       
+      // Core
       this.explosionGraphics.circle(particle.x, particle.y, size);
       this.explosionGraphics.fill({ 
         color: particle.color,
         alpha: alpha * 0.8
       });
       
-      // Outer glow
+      // Glow
       this.explosionGraphics.circle(particle.x, particle.y, size * 1.5);
       this.explosionGraphics.fill({ 
         color: particle.color,
@@ -609,11 +697,9 @@ export class AviatorScene {
   }
 
   private updateCrashFlash(ticker: Ticker): void {
-    // Flash effect on crash
-    if (this.flyAwayTime < 0.1) {
-      this.crashFlashAlpha = 1.0;
-    } else {
-      this.crashFlashAlpha = Math.max(0, this.crashFlashAlpha - ticker.deltaMS / 200);
+    // Flash effect with exponential decay
+    if (this.crashFlashAlpha > 0) {
+      this.crashFlashAlpha = Math.max(0, this.crashFlashAlpha - this.deltaTime * 5);
     }
 
     this.flashGraphics.clear();
@@ -632,7 +718,6 @@ export class AviatorScene {
     const plane = this.planeSprite || this.planeGraphics;
     const rotation = this.planeRotationCurrent;
     
-    // Calculate exhaust position (behind plane)
     const exhaustDistance = this.PLANE_SIZE * 0.8;
     const exhaustX = planeX - Math.cos(rotation) * exhaustDistance;
     const exhaustY = planeY - Math.sin(rotation) * exhaustDistance;
@@ -640,90 +725,106 @@ export class AviatorScene {
     // Add new particles
     const particlesPerFrame = this.isMobile ? 1 : 2;
     for (let i = 0; i < particlesPerFrame; i++) {
-      const angle = rotation + (Math.PI) + (Math.random() - 0.5) * 0.5;
-      const speed = 0.5 + Math.random() * 1.0;
-      this.exhaustParticles.push({
-        x: exhaustX + (Math.random() - 0.5) * 10,
-        y: exhaustY + (Math.random() - 0.5) * 10,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: 1.0,
-        maxLife: 0.3 + Math.random() * 0.4
-      });
+      const particle = this.getParticle();
+      const angle = rotation + Math.PI + (Math.random() - 0.5) * 0.5;
+      const speed = 30 + Math.random() * 50;
+      const life = 0.3 + Math.random() * 0.4;
+      
+      particle.x = exhaustX + (Math.random() - 0.5) * 10;
+      particle.y = exhaustY + (Math.random() - 0.5) * 10;
+      particle.vx = Math.cos(angle) * speed;
+      particle.vy = Math.sin(angle) * speed;
+      particle.life = life;
+      particle.maxLife = life;
+      
+      this.exhaustParticles.push(particle);
     }
     
-    // Update and remove dead particles
-    this.exhaustParticles = this.exhaustParticles.filter(particle => {
-      particle.x += particle.vx;
-      particle.y += particle.vy;
-      particle.life -= (1 / 60) / particle.maxLife; // Assuming 60fps
-      particle.vx *= 0.95; // Friction
-      particle.vy *= 0.95;
-      return particle.life > 0;
-    });
+    // Update particles with physics
+    const aliveParticles: Particle[] = [];
+    for (const particle of this.exhaustParticles) {
+      // Air resistance
+      particle.vx *= Math.pow(0.95, this.deltaTime * 60);
+      particle.vy *= Math.pow(0.95, this.deltaTime * 60);
+      
+      // Update position
+      particle.x += particle.vx * this.deltaTime;
+      particle.y += particle.vy * this.deltaTime;
+      
+      // Update life
+      particle.life -= this.deltaTime;
+      
+      if (particle.life > 0) {
+        aliveParticles.push(particle);
+      } else {
+        this.recycleParticle(particle);
+      }
+    }
     
-    // Limit particle count for performance
+    this.exhaustParticles = aliveParticles;
+    
+    // Limit particle count
     const maxParticles = this.isMobile ? 20 : 40;
     if (this.exhaustParticles.length > maxParticles) {
-      this.exhaustParticles = this.exhaustParticles.slice(-maxParticles);
+      const toRecycle = this.exhaustParticles.splice(0, this.exhaustParticles.length - maxParticles);
+      toRecycle.forEach(p => this.recycleParticle(p as any));
     }
   }
 
   private updateTrail(x: number, y: number): void {
-    // Add new trail point
     this.trailPoints.push({ x, y, alpha: 1.0 });
     
-    // Limit trail length for performance
     const maxTrailLength = this.isMobile ? 20 : 40;
     if (this.trailPoints.length > maxTrailLength) {
       this.trailPoints.shift();
     }
     
-    // Fade trail points with smooth gradient
+    // Smooth gradient fade
     this.trailPoints.forEach((point, i) => {
       const progress = i / this.trailPoints.length;
       point.alpha = (1 - progress) * 0.7;
     });
     
-    // Draw trail with gradient effect
+    // Batch draw trail
     this.trailGraphics.clear();
     if (this.trailPoints.length > 1) {
       // Draw exhaust particles
       for (const particle of this.exhaustParticles) {
-        const size = this.PLANE_SIZE * 0.15 * particle.life;
+        const size = this.PLANE_SIZE * 0.15 * (particle.life / particle.maxLife);
         this.trailGraphics.circle(particle.x, particle.y, size);
         this.trailGraphics.fill({ 
           color: this.COLORS.TRAIL,
-          alpha: particle.life * 0.4
+          alpha: (particle.life / particle.maxLife) * 0.4
         });
       }
       
-      // Draw trail line with varying width
-      this.trailGraphics.moveTo(this.trailPoints[0].x, this.trailPoints[0].y);
-      for (let i = 1; i < this.trailPoints.length; i++) {
-        const point = this.trailPoints[i];
-        const progress = i / this.trailPoints.length;
-        const width = this.LINE_WIDTH * 2 * (1 - progress * 0.5);
-        this.trailGraphics.lineTo(point.x, point.y);
+      // Draw trail line
+      if (this.trailPoints.length > 1) {
+        this.trailGraphics.moveTo(this.trailPoints[0].x, this.trailPoints[0].y);
+        for (let i = 1; i < this.trailPoints.length; i++) {
+          const point = this.trailPoints[i];
+          const progress = i / this.trailPoints.length;
+          const width = this.LINE_WIDTH * 2 * (1 - progress * 0.5);
+          this.trailGraphics.lineTo(point.x, point.y);
+          this.trailGraphics.stroke({ 
+            width: width, 
+            color: this.COLORS.TRAIL,
+            alpha: point.alpha
+          });
+          this.trailGraphics.moveTo(point.x, point.y);
+        }
+        
+        // Glow
+        this.trailGraphics.moveTo(this.trailPoints[0].x, this.trailPoints[0].y);
+        for (let i = 1; i < this.trailPoints.length; i++) {
+          this.trailGraphics.lineTo(this.trailPoints[i].x, this.trailPoints[i].y);
+        }
         this.trailGraphics.stroke({ 
-          width: width, 
+          width: this.LINE_WIDTH * 3, 
           color: this.COLORS.TRAIL,
-          alpha: point.alpha
+          alpha: 0.15
         });
-        this.trailGraphics.moveTo(point.x, point.y);
       }
-      
-      // Glow effect
-      this.trailGraphics.moveTo(this.trailPoints[0].x, this.trailPoints[0].y);
-      for (let i = 1; i < this.trailPoints.length; i++) {
-        const point = this.trailPoints[i];
-        this.trailGraphics.lineTo(point.x, point.y);
-      }
-      this.trailGraphics.stroke({ 
-        width: this.LINE_WIDTH * 3, 
-        color: this.COLORS.TRAIL,
-        alpha: 0.15
-      });
     }
   }
 
@@ -740,7 +841,7 @@ export class AviatorScene {
       this.curvePoints = [{ t: 0, m: 1.0 }];
     }
 
-    // Draw area fill with gradient effect (simulated)
+    // Draw area fill
     this.areaGraphics.moveTo(originX, originY);
     for (const point of this.curvePoints) {
       const x = originX + (point.t * this.scaleX);
@@ -758,13 +859,12 @@ export class AviatorScene {
     this.areaGraphics.lineTo(originX, originY);
     this.areaGraphics.closePath();
     
-    // Gradient fill (simulated with alpha gradient)
     this.areaGraphics.fill({ 
       color: this.COLORS.AREA_START, 
       alpha: 0.15 
     });
 
-    // Draw curve line with glow effect
+    // Draw curve line
     this.curveGraphics.moveTo(originX, originY);
     for (const point of this.curvePoints) {
       const x = originX + (point.t * this.scaleX);
@@ -803,18 +903,27 @@ export class AviatorScene {
       if (state === GameState.BETTING) {
         this.resetScene();
       } else if (state === GameState.CRASHED) {
-        // Start fly-away animation
         const plane = this.planeSprite || this.planeGraphics;
         if (plane) {
+          // Initialize physics-based fly-away
+          this.flyAwayPhysics.x = plane.x;
+          this.flyAwayPhysics.y = plane.y;
+          this.flyAwayPhysics.vx = 0;
+          this.flyAwayPhysics.vy = 0;
+          this.flyAwayPhysics.rotation = this.planeRotationCurrent;
+          this.flyAwayPhysics.angularVelocity = this.PHYSICS.FLY_AWAY_ANGULAR_VELOCITY;
+          this.flyAwayPhysics.scale = 1.0;
+          this.flyAwayPhysics.alpha = 1.0;
+          this.flyAwayPhysics.active = true;
           this.flyAwayStartX = plane.x;
           this.flyAwayStartY = plane.y;
-          this.isFlyingAway = true;
-          this.flyAwayTime = 0;
           
-          // Create explosion at crash point
+          // Create explosion
           this.createExplosion(plane.x, plane.y);
+          this.crashFlashAlpha = 1.0;
           
-          // Clear exhaust but keep trail for fly-away
+          // Clear exhaust
+          this.exhaustParticles.forEach(p => this.recycleParticle(p as any));
           this.exhaustParticles = [];
         }
       }
@@ -828,7 +937,6 @@ export class AviatorScene {
         plane.alpha = 1;
       }
 
-      // Optimized curve point sampling
       const lastPoint = this.curvePoints[this.curvePoints.length - 1];
       const threshold = this.isMobile ? 0.08 : 0.05;
       if (!lastPoint || 
@@ -842,8 +950,13 @@ export class AviatorScene {
   private resetScene(): void {
     this.curvePoints = [{ t: 0, m: 1.0 }];
     this.trailPoints = [];
+    
+    // Recycle particles
+    this.exhaustParticles.forEach(p => this.recycleParticle(p as any));
+    this.explosionParticles.forEach(p => this.recycleExplosionParticle(p));
     this.exhaustParticles = [];
     this.explosionParticles = [];
+    
     this.curveGraphics.clear();
     this.areaGraphics.clear();
     this.trailGraphics.clear();
@@ -862,13 +975,11 @@ export class AviatorScene {
       }
     }
 
-    // Reset animation state
     this.planeScale = 1.0;
     this.planeRotationTarget = -0.1;
     this.planeRotationCurrent = -0.1;
     this.flightTime = 0;
-    this.isFlyingAway = false;
-    this.flyAwayTime = 0;
+    this.flyAwayPhysics.active = false;
     this.crashFlashAlpha = 0;
 
     this.maxTimeWindow = 10;
@@ -898,12 +1009,10 @@ export class AviatorScene {
     this.width = Math.max(width, 400);
     this.height = Math.max(height, 300);
     
-    // Re-detect mobile
     const wasMobile = this.isMobile;
     this.isMobile = this.width < 768 || window.innerWidth < 768;
     this.quality = this.isMobile ? 0.5 : 1;
     
-    // Update quality if mobile status changed
     if (wasMobile !== this.isMobile && this.app?.renderer) {
       this.app.renderer.resolution = this.quality;
     }
@@ -915,12 +1024,10 @@ export class AviatorScene {
         this.app.renderer.resize(this.width, this.height);
       }
 
-      // Redraw background and grid
       this.backgroundLayer.removeChildren();
       this.drawBackground();
       this.drawGrid();
 
-      // Redraw plane graphics if using fallback
       if (this.planeGraphics) {
         this.drawPlaneGraphics();
       }
@@ -988,4 +1095,19 @@ export class AviatorScene {
     this.isInitialized = false;
     this.safeDestroyApp();
   }
+}
+
+// Type definitions for particles
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+}
+
+interface ExplosionParticle extends Particle {
+  size: number;
+  color: number;
 }
